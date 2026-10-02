@@ -4,7 +4,6 @@ from typing import Optional
 import redis
 from rq import Queue
 from app.config import settings
-from app.workers.audio_worker import process_audio_note
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +50,8 @@ def enqueue_audio_job(note_id: str) -> bool:
     Falls back gracefully to an asynchronous daemon thread if Redis is offline,
     ensuring zero-downtime execution in all environments.
     """
+    from app.workers.audio_worker import process_audio_note
+
     try:
         queue = get_rq_queue()
         if queue:

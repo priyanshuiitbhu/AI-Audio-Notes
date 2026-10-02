@@ -234,7 +234,7 @@ def test_delete_note():
 
 @patch("app.workers.audio_worker.storage_service.get_local_file_path")
 @patch("app.workers.audio_worker.gnani_service.transcribe")
-@patch("app.workers.audio_worker.summary_service.summarize")
+@patch("app.workers.audio_worker.summary_service.generate_summary")
 def test_worker_pipeline_success(mock_summary, mock_transcribe, mock_get_path, tmp_path):
     """Verify end-to-end worker completes transcription and summary generation."""
     test_file = tmp_path / "sample.wav"

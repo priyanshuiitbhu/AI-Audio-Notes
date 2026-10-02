@@ -47,8 +47,18 @@ class Settings(BaseSettings):
     STORAGE_SECRET_KEY: Optional[str] = None
     STORAGE_REGION: str = "us-east-1"
 
-    # LLM Summarization
-    LLM_PROVIDER: str = "openai"  # "openai", "groq", "gemini", or "fallback"
+    # Google Gemini Summarization
+    GEMINI_API_KEY: Optional[str] = Field(
+        default=None,
+        description="Google Gemini API key for transcript summarization."
+    )
+    GEMINI_MODEL: str = Field(
+        default="gemini-3.5-flash-lite",
+        description="Google Gemini model identifier (e.g. gemini-3.5-flash-lite, gemini-3.5-flash)."
+    )
+
+    # Legacy / Alternative LLM Summarization
+    LLM_PROVIDER: str = "gemini"  # "gemini", "openai", "groq", or "fallback"
     LLM_API_KEY: Optional[str] = None
     LLM_MODEL: str = "gpt-4o-mini"
     LLM_BASE_URL: str = "https://api.openai.com/v1"

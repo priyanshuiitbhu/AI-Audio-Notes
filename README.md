@@ -1,6 +1,6 @@
 # Audio Notes Platform
 
-A production-grade, distributed web platform that transcribes spoken audio using the **Gnani Prisma v2.5 ASR API** and generates structured executive notes using an **LLM summarization pipeline**.
+A production-grade, distributed web platform that transcribes spoken audio using the **Gnani Prisma v2.5 ASR API** and generates structured executive notes using **Google Gemini** (`google-genai` SDK).
 
 Designed and engineered for the **Gnani Innovations Private Limited Take-Home Assessment**.
 
@@ -46,10 +46,12 @@ Users upload an audio recording in any standard format (MP3, WAV, M4A, AAC, OGG,
 - **Multilingual Support**: Supports 10 Indian languages (`en-IN`, `hi-IN`, `bn-IN`, `ta-IN`, `te-IN`, `mr-IN`, `kn-IN`, `gu-IN`, `ml-IN`, `pa-IN`).
 - **Comfortable Long Audio Processing**: Handles recordings of 2 minutes or longer via Gnani STT Batch processing and deterministic audio segment chunking.
 - **Stage-Based Realtime Progress**: The UI never freezes or looks stuck; it clearly reflects current states: `Uploading` → `Queued` → `Transcribing` → `Generating summary` → `Completed` / `Failed`.
-- **Structured AI Summaries**: Synthesizes transcripts into an Executive Overview, Key Points, Strategic Decisions, and Action Items.
+- **Google Gemini Structured Summaries**: Dedicated summarization using Google Gemini (`google-genai` SDK) into an Executive Overview, Key Points, Important Details, and Action Items.
+- **Transcript Preservation Guarantee**: Transcripts are persisted to PostgreSQL *before* calling Gemini. If Gemini encounters rate limits or errors, the transcript is never lost.
+- **Optimized Retry Pipeline**: Retrying a failed note skips Gnani ASR if the transcript is already saved, saving API credits and accelerating completion.
 - **Resilient Error Recovery & Retries**: Distinguishes transient network errors from permanent invalid files; allows one-click reprocessing via `POST /api/notes/:id/retry`.
 - **Persistent Notes Library**: Full CRUD support to search, reopen, review, copy, and download previous transcripts and notes.
-- **Zero-Secret Client Security**: All API keys (Gnani, LLM, Storage) live exclusively on the backend server.
+- **Zero-Secret Client Security**: All API keys (Gnani, Gemini, Storage) live exclusively on the backend server.
 - **Interactive `/architecture` Page**: Complete built-in system documentation with data flow diagrams and engineering rationale.
 
 ---
@@ -110,7 +112,7 @@ Users upload an audio recording in any standard format (MP3, WAV, M4A, AAC, OGG,
 - **Storage**: S3-compatible Object Storage (AWS S3, Supabase Storage, Cloudflare R2, MinIO) + Local filesystem provider
 - **Background Jobs**: Redis 7 + Python RQ (with automatic daemon thread fallback for lightweight local dev)
 - **AI / Speech**: Gnani Prisma v2.5 Speech-to-Text API (`api.vachana.ai`)
-- **AI / LLM**: OpenAI GPT-4o-mini / Groq / OpenRouter / Gemini with structured prompt engineering & extractive fallback
+- **AI / LLM**: Google Gemini (`google-genai` official Python SDK, default model: `gemini-3.5-flash-lite`) with structured prompt engineering & extractive fallback
 
 ---
 
@@ -129,7 +131,7 @@ Users upload an audio recording in any standard format (MP3, WAV, M4A, AAC, OGG,
 │   │   ├── services/
 │   │   │   ├── gnani_service.py   # Dedicated Gnani STT client (REST, Batch, Retries)
 │   │   │   ├── storage_service.py # S3 and Local filesystem storage abstraction
-│   │   │   ├── summary_service.py # LLM summarization with hierarchical chunking
+│   │   │   ├── summary_service.py # Google Gemini summarization with exponential retries
 │   │   │   └── job_service.py     # Task queue dispatcher (Redis RQ & Thread fallback)
 │   │   ├── utils/
 │   │   │   └── audio_utils.py     # Filename sanitization, wave splitter, format checks
@@ -140,8 +142,9 @@ Users upload an audio recording in any standard format (MP3, WAV, M4A, AAC, OGG,
 │   │   └── main.py                # FastAPI initialization, CORS, health endpoint
 │   ├── migrations/                # Alembic migration revisions
 │   ├── tests/
-│   │   └── test_api.py            # Comprehensive pytest test suite (100% mocked external APIs)
-│   ├── requirements.txt           # Python dependencies
+│   │   ├── test_api.py            # API & worker pipeline integration tests
+│   │   └── test_gemini_summary.py # Gemini summarization, retry, preservation, and edge-case tests
+│   ├── requirements.txt           # Python dependencies (includes google-genai)
 │   ├── pytest.ini                 # Pytest configuration
 │   └── worker.py                  # Standalone RQ worker runner script
 │
@@ -194,9 +197,8 @@ cp .env.example .env
 | `STORAGE_ENDPOINT` | Custom S3 endpoint (for Supabase / MinIO / R2) | Optional |
 | `STORAGE_ACCESS_KEY` | S3 access key ID | Optional |
 | `STORAGE_SECRET_KEY` | S3 secret access key | Optional |
-| `LLM_PROVIDER` | LLM provider | `openai` |
-| `LLM_API_KEY` | LLM API Key (OpenAI, Groq, OpenRouter) | Optional (extractive fallback used if empty) |
-| `LLM_MODEL` | LLM model name | `gpt-4o-mini` |
+| `GEMINI_API_KEY` | Google Gemini API Key (Backend only, never exposed to frontend) | `AIzaSy...` |
+| `GEMINI_MODEL` | Google Gemini Model Identifier | `gemini-3.5-flash-lite` |
 | `NEXT_PUBLIC_API_URL` | FastAPI backend URL for frontend | `http://localhost:8000/api` |
 | `NEXT_PUBLIC_GITHUB_REPO_URL` | GitHub repository link for `/architecture` | `https://github.com/your-username/Audio-Notes-Platform` |
 
@@ -276,8 +278,10 @@ source venv/bin/activate
 pytest -v
 ```
 
-### Test Suite Coverage:
-- `test_health_check_endpoint`: Verifies `/api/health` reports DB, Redis, and storage statuses.
+### Test Suite Coverage (22 Unit & Integration Tests):
+
+**API & Pipeline Tests (`test_api.py`)**:
+- `test_health_check_endpoint`: Verifies `/api/health` reports DB, Redis, storage, and Gemini status.
 - `test_upload_valid_audio`: Validates audio upload, storage persistence, and job queue dispatch.
 - `test_upload_empty_file_rejected`: Confirms 0-byte uploads return HTTP 400.
 - `test_upload_unsupported_file_format`: Confirms non-audio files (e.g. .pdf, .exe) return HTTP 400.
@@ -289,6 +293,18 @@ pytest -v
 - `test_delete_note`: Confirms deletion removes both the DB record and object storage file.
 - `test_worker_pipeline_success`: Validates end-to-end background transcription and summary generation.
 - `test_worker_pipeline_transcription_failure`: Validates friendly error message recording on service timeout.
+
+**Google Gemini Summarization Tests (`test_gemini_summary.py`)**:
+- `test_gemini_empty_or_whitespace_transcript`: Verifies immediate graceful message without calling Gemini.
+- `test_gemini_fallback_when_no_api_key`: Validates structured extractive fallback when API key is missing.
+- `test_gemini_successful_summary`: Validates structured Markdown output (`## Overview`, `## Key Points`, `## Important Details`, `## Action Items`).
+- `test_gemini_empty_response_raises_error`: Validates error handling when Gemini returns empty response.
+- `test_gemini_auth_error_no_retry`: Confirms 401/403 errors raise `GeminiAuthError` immediately without retrying.
+- `test_gemini_rate_limit_retry`: Confirms 429 rate limit triggers exponential backoff retries.
+- `test_gemini_timeout_error`: Confirms timeouts trigger backoff and map to `GeminiTimeoutError`.
+- `test_hierarchical_summarization_large_transcript`: Validates chunking and hierarchical synthesis for long transcripts (>15,000 words).
+- `test_worker_preserves_transcript_on_gemini_failure`: **Crucial Guarantee**: Transcripts are persisted before Gemini is called; Gemini failures never wipe the transcript.
+- `test_worker_skips_gnani_on_retry_when_transcript_exists`: Validates that re-processing skips Gnani STT and directly re-attempts Gemini summarization.
 
 ### Frontend Type Checking & Build:
 

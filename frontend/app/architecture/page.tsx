@@ -88,7 +88,7 @@ export default function ArchitecturePage() {
   │      • Short Audio (<=60s)  ──► Gnani REST STT (/stt/v3)
   │      • Long Audio (>60s)    ──► Gnani Batch STT (/stt/v3/batch/jobs) or Audio Chunking
   ├── 3. Save Transcript to PostgreSQL (status: SUMMARIZING)
-  ├── 4. Call LLM Service (Structured Executive Summary + Action Items)
+  ├── 4. Call Google Gemini (google-genai SDK, structured summary)
   └── 5. Mark COMPLETED in PostgreSQL (completed_at: timestamp)
           `}</pre>
         </div>
@@ -236,19 +236,22 @@ export default function ArchitecturePage() {
           </ul>
         </div>
 
-        {/* Component 7: LLM Summarization */}
+        {/* Component 7: Google Gemini Summarization */}
         <div className="p-6 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-3">
           <div className="flex items-center gap-2 text-indigo-600">
             <Sparkles className="w-5 h-5" />
-            <h3 className="text-base font-bold text-slate-900">7. LLM Summarization Service</h3>
+            <h3 className="text-base font-bold text-slate-900">7. Google Gemini Summarization</h3>
           </div>
           <p className="text-xs text-slate-600 leading-relaxed">
-            Dedicated service (<code>summary_service.py</code>) generating structured executive summaries, key discussion points, conclusions, and action items.
+            Dedicated service (<code>summary_service.py</code>) using the official <strong>google-genai</strong> Python SDK to synthesize structured, high-accuracy executive summaries from Gnani transcripts.
           </p>
           <ul className="text-xs text-slate-600 list-disc pl-4 space-y-1">
-            <li>Standard OpenAI chat completions API interface (compatible with OpenAI, Groq, OpenRouter, and Gemini).</li>
-            <li>Hierarchical chunking for long transcripts (&gt; 2,500 words) to avoid context limit degradation.</li>
-            <li>Zero-downtime extractive fallback summarizer if no LLM key is supplied during offline evaluation.</li>
+            <li><strong>Strict Division of Responsibilities:</strong> Gnani is used exclusively for STT; Google Gemini is used exclusively for transcript summarization.</li>
+            <li><strong>Transcript Preservation Guarantee:</strong> Transcripts are persisted to PostgreSQL <em>before</em> calling Gemini. If Gemini encounters rate limits or errors, the transcript is never lost.</li>
+            <li><strong>Optimized Retry:</strong> Retrying a failed note with an existing transcript skips Gnani ASR and directly triggers Gemini summarization, conserving API credits and time.</li>
+            <li><strong>Configurable Model:</strong> Controlled via <code>GEMINI_MODEL</code> (default: <code>gemini-3.5-flash-lite</code>).</li>
+            <li><strong>Structured Schema:</strong> Generates uniform Markdown: <code>## Overview</code>, <code>## Key Points</code>, <code>## Important Details</code>, and <code>## Action Items</code>.</li>
+            <li><strong>Zero Key Exposure:</strong> <code>GEMINI_API_KEY</code> is strictly backend-only and never leaked to the client bundle or logs.</li>
           </ul>
         </div>
 

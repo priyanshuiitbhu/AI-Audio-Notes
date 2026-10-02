@@ -89,7 +89,8 @@ def health_check():
 
     # 4. Check API Keys configured
     gnani_ok = bool(settings.GNANI_API_KEY and len(settings.GNANI_API_KEY) > 5)
-    llm_ok = bool(settings.LLM_API_KEY and len(settings.LLM_API_KEY) > 5)
+    gemini_ok = bool(settings.GEMINI_API_KEY and len(settings.GEMINI_API_KEY) > 5)
+    llm_ok = gemini_ok or bool(settings.LLM_API_KEY and len(settings.LLM_API_KEY) > 5)
 
     return HealthResponse(
         status="healthy" if db_status == "healthy" else "degraded",
@@ -98,6 +99,7 @@ def health_check():
         storage=storage_status,
         gnani_configured=gnani_ok,
         llm_configured=llm_ok,
+        gemini_configured=gemini_ok,
         timestamp=datetime.now(timezone.utc).isoformat(),
     )
 

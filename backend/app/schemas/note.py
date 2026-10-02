@@ -72,4 +72,5 @@ class HealthResponse(BaseModel):
     storage: str
     gnani_configured: bool
     llm_configured: bool
+    gemini_configured: bool = False
     timestamp: str

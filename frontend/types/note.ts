@@ -66,5 +66,6 @@ export interface HealthResponse {
   storage: string;
   gnani_configured: boolean;
   llm_configured: boolean;
+  gemini_configured?: boolean;
   timestamp: string;
 }

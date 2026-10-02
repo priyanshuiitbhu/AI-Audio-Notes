@@ -12,7 +12,13 @@ from app.services.gnani_service import (
     GnaniInvalidAudioError,
     GnaniAPIError,
 )
-from app.services.summary_service import summary_service
+from app.services.summary_service import (
+    summary_service,
+    GeminiAuthError,
+    GeminiRateLimitError,
+    GeminiTimeoutError,
+    GeminiError,
+)
 from app.utils.audio_utils import get_audio_duration_seconds
 
 logger = logging.getLogger(__name__)
@@ -20,13 +26,13 @@ logger = logging.getLogger(__name__)
 
 def process_audio_note(note_id: str):
     """
-    Background worker task to process an uploaded audio note:
-    1. Retrieve audio file from storage
-    2. Transcribe via Gnani STT API (with stage and progress updates)
-    3. Save transcript to PostgreSQL
-    4. Generate summary via LLM
-    5. Save summary and mark note as COMPLETED
-    6. Catch errors gracefully and record human-readable error messages
+    Background worker pipeline:
+    1. Check if transcript already exists (e.g. from retry where only summarization failed).
+    2. If not, fetch audio from storage and transcribe via Gnani ASR API.
+    3. Save transcript to PostgreSQL and update status to SUMMARIZING.
+    4. Call Google Gemini to generate structured executive notes.
+    5. Save summary and mark note as COMPLETED.
+    6. Catch errors gracefully: if Gemini fails, transcript remains saved!
     """
     db = SessionLocal()
     is_temp_file = False
@@ -40,90 +46,119 @@ def process_audio_note(note_id: str):
 
         logger.info(f"[note_id={note_id}] Starting audio processing for '{note.file_name}'")
 
-        # Step 1: Mark as PROCESSING
-        note.status = NoteStatus.PROCESSING.value
-        note.progress = 15
-        note.current_stage = "Preparing audio file..."
-        db.commit()
+        transcript = note.transcript.strip() if note.transcript else ""
 
-        # Step 2: Retrieve audio file from storage
-        try:
-            local_path = storage_service.get_local_file_path(note.storage_key)
-            if "/tmp/" in local_path or "NamedTemporaryFile" in local_path:
-                is_temp_file = True
-        except Exception as e:
-            logger.error(f"[note_id={note_id}] Failed to retrieve file from storage: {e}")
-            raise RuntimeError(f"Storage retrieval failed: {str(e)}")
-
-        # Detect duration
-        duration = get_audio_duration_seconds(local_path)
-        if duration:
-            note.duration_seconds = round(duration, 2)
+        # Step 1: If transcript does not already exist, perform Gnani Speech-to-Text
+        if not transcript:
+            note.status = NoteStatus.PROCESSING.value
+            note.progress = 15
+            note.current_stage = "Preparing audio file..."
             db.commit()
 
-        # Step 3: Transcription with Gnani
-        note.status = NoteStatus.TRANSCRIBING.value
-        note.progress = 30
-        note.current_stage = "Initiating Gnani transcription..."
-        db.commit()
-
-        def update_transcription_progress(pct: int, stage_desc: str):
             try:
-                db_refresh = SessionLocal()
-                n = db_refresh.query(Note).filter(Note.id == note_id).first()
-                if n:
-                    n.progress = pct
-                    n.current_stage = stage_desc
-                    db_refresh.commit()
-                db_refresh.close()
-            except Exception as pe:
-                logger.debug(f"[note_id={note_id}] Progress update error: {pe}")
+                local_path = storage_service.get_local_file_path(note.storage_key)
+                if "/tmp/" in local_path or "NamedTemporaryFile" in local_path:
+                    is_temp_file = True
+            except Exception as e:
+                logger.error(f"[note_id={note_id}] Failed to retrieve file from storage: {e}")
+                raise RuntimeError(f"Storage retrieval failed: {str(e)}")
 
-        logger.info(f"[note_id={note_id}] Calling Gnani STT API (duration: {note.duration_seconds}s)")
-        asr_result = gnani_service.transcribe(
-            file_path=local_path,
-            language_code=note.language_code,
-            progress_callback=update_transcription_progress,
-        )
+            duration = get_audio_duration_seconds(local_path)
+            if duration:
+                note.duration_seconds = round(duration, 2)
+                db.commit()
 
-        transcript = asr_result.get("transcript", "").strip()
-        note.transcript = transcript
-        note.progress = 75
-        note.current_stage = "Transcript generated. Generating summary..."
+            note.status = NoteStatus.TRANSCRIBING.value
+            note.progress = 30
+            note.current_stage = "Initiating Gnani transcription..."
+            db.commit()
+
+            def update_transcription_progress(pct: int, stage_desc: str):
+                try:
+                    db_refresh = SessionLocal()
+                    n = db_refresh.query(Note).filter(Note.id == note_id).first()
+                    if n:
+                        n.progress = pct
+                        n.current_stage = stage_desc
+                        db_refresh.commit()
+                    db_refresh.close()
+                except Exception as pe:
+                    logger.debug(f"[note_id={note_id}] Progress update error: {pe}")
+
+            logger.info(f"[note_id={note_id}] Calling Gnani STT API (duration: {note.duration_seconds}s)")
+            try:
+                asr_result = gnani_service.transcribe(
+                    file_path=local_path,
+                    language_code=note.language_code,
+                    progress_callback=update_transcription_progress,
+                )
+                transcript = asr_result.get("transcript", "").strip()
+            except GnaniAuthError as e:
+                logger.error(f"[note_id={note_id}] Gnani authentication error: {e}")
+                _fail_note(db, note_id, "We couldn't authenticate with the Gnani transcription service. Please verify server API configuration.")
+                return
+            except GnaniRateLimitError as e:
+                logger.error(f"[note_id={note_id}] Gnani rate limit error: {e}")
+                _fail_note(db, note_id, "The transcription service is currently experiencing high load. Please retry in a few moments.")
+                return
+            except GnaniTimeoutError as e:
+                logger.error(f"[note_id={note_id}] Gnani timeout: {e}")
+                _fail_note(db, note_id, "We couldn't transcribe this audio because the transcription service timed out. Please try again.")
+                return
+            except GnaniInvalidAudioError as e:
+                logger.error(f"[note_id={note_id}] Invalid audio: {e}")
+                _fail_note(db, note_id, f"The audio file could not be recognized by the speech engine: {str(e)}")
+                return
+            except Exception as e:
+                logger.exception(f"[note_id={note_id}] Unexpected error during transcription: {e}")
+                _fail_note(db, note_id, f"Transcription failed: {str(e)}")
+                return
+
+            # Save transcript immediately to PostgreSQL
+            note.transcript = transcript
+            db.commit()
+            logger.info(f"[note_id={note_id}] Transcript saved to database ({len(transcript)} chars).")
+
+        else:
+            logger.info(f"[note_id={note_id}] Using existing transcript ({len(transcript)} chars), skipping re-transcription.")
+
+        # Step 2: Transition to SUMMARIZING stage
         note.status = NoteStatus.SUMMARIZING.value
+        note.progress = 75
+        note.current_stage = "Generating summary with Google Gemini..."
         db.commit()
-        logger.info(f"[note_id={note_id}] Transcription completed successfully. Transcript length: {len(transcript)} chars.")
 
-        # Step 4: LLM Summarization
-        logger.info(f"[note_id={note_id}] Generating summary via LLM service")
-        summary_text = summary_service.summarize(transcript)
-        note.summary = summary_text
-        note.progress = 100
-        note.current_stage = "Completed"
-        note.status = NoteStatus.COMPLETED.value
-        note.completed_at = get_utc_now()
-        note.error_message = None
-        db.commit()
-        logger.info(f"[note_id={note_id}] Processing pipeline COMPLETED successfully.")
+        # Step 3: Google Gemini Summarization
+        logger.info(f"[note_id={note_id}] Prompting Google Gemini ({summary_service.model_name})")
+        try:
+            summary_text = summary_service.generate_summary(transcript)
+            note.summary = summary_text
+            note.progress = 100
+            note.current_stage = "Completed"
+            note.status = NoteStatus.COMPLETED.value
+            note.completed_at = get_utc_now()
+            note.error_message = None
+            db.commit()
+            logger.info(f"[note_id={note_id}] Processing pipeline COMPLETED successfully with Google Gemini.")
 
-    except GnaniAuthError as e:
-        logger.error(f"[note_id={note_id}] Gnani authentication error: {e}")
-        _fail_note(db, note_id, "We couldn't authenticate with the Gnani transcription service. Please verify server API configuration.")
-    except GnaniRateLimitError as e:
-        logger.error(f"[note_id={note_id}] Gnani rate limit error: {e}")
-        _fail_note(db, note_id, "The transcription service is currently experiencing high load. Please retry in a few moments.")
-    except GnaniTimeoutError as e:
-        logger.error(f"[note_id={note_id}] Gnani timeout: {e}")
-        _fail_note(db, note_id, "We couldn't transcribe this audio because the transcription service timed out. Please try again.")
-    except GnaniInvalidAudioError as e:
-        logger.error(f"[note_id={note_id}] Invalid audio: {e}")
-        _fail_note(db, note_id, f"The audio file could not be recognized by the speech engine: {str(e)}")
+        except GeminiAuthError as ge:
+            logger.error(f"[note_id={note_id}] Gemini authentication error: {ge}")
+            _fail_note(db, note_id, "Transcript was generated successfully, but Google Gemini authentication failed. Please verify GEMINI_API_KEY.")
+        except GeminiRateLimitError as ge:
+            logger.error(f"[note_id={note_id}] Gemini rate limit error: {ge}")
+            _fail_note(db, note_id, "Transcript was generated successfully, but Google Gemini rate limit was reached. Please retry in a few moments.")
+        except GeminiTimeoutError as ge:
+            logger.error(f"[note_id={note_id}] Gemini timeout error: {ge}")
+            _fail_note(db, note_id, "Transcript was generated successfully, but Google Gemini timed out. Please try again.")
+        except Exception as ge:
+            logger.error(f"[note_id={note_id}] Gemini summarization error: {ge}")
+            _fail_note(db, note_id, f"Transcript was generated successfully, but summary generation failed. Please try again.")
+
     except Exception as e:
-        logger.exception(f"[note_id={note_id}] Unexpected error during processing: {e}")
-        _fail_note(db, note_id, f"An error occurred while processing the audio note: {str(e)}")
+        logger.exception(f"[note_id={note_id}] Top-level worker exception: {e}")
+        _fail_note(db, note_id, f"An unexpected error occurred while processing: {str(e)}")
 
     finally:
-        # Cleanup temporary file if downloaded from cloud storage
         if is_temp_file and local_path and os.path.isfile(local_path):
             try:
                 os.remove(local_path)
@@ -133,6 +168,10 @@ def process_audio_note(note_id: str):
 
 
 def _fail_note(db, note_id: str, human_readable_error: str):
+    """
+    Sets status to FAILED and stores human-readable error.
+    CRITICAL: Does NOT erase or clear note.transcript!
+    """
     try:
         note = db.query(Note).filter(Note.id == note_id).first()
         if note:
