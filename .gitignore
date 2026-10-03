@@ -45,6 +45,7 @@ test_audionotes.db*
 *.flac
 *.aac
 *.ogg
+*.zip
 
 # OS Files
 .DS_Store
