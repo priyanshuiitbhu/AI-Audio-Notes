@@ -38,6 +38,7 @@ backend/storage/
 *.db
 *.sqlite
 *.sqlite3
+test_audionotes.db*
 *.wav
 *.mp3
 *.m4a
