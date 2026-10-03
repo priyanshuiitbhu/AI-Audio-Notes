@@ -10,7 +10,8 @@ from app.config import settings
 from app.database import init_db, SessionLocal
 from app.api.notes import router as notes_router
 from app.schemas.note import HealthResponse
-from app.services.job_service import check_redis_health
+from app.services.job_service import check_redis_health, check_worker_health
+from app.services.storage_service import storage_service
 
 # Configure logging
 logging.basicConfig(
@@ -78,24 +79,33 @@ def health_check():
         db.execute(text("SELECT 1"))
         db.close()
     except Exception as e:
-        logger.error(f"Database health check failed: {e}")
-        db_status = f"unhealthy: {str(e)}"
+        logger.error(f"Database health check failed: {type(e).__name__}")
+        db_status = "unhealthy"
 
     # 2. Check Redis
     redis_status = check_redis_health()
 
-    # 3. Check Storage
-    storage_status = f"{settings.STORAGE_PROVIDER} configured"
+    # 3. Check worker registration
+    worker_status = check_worker_health()
 
-    # 4. Check API Keys configured
+    # 4. Check Storage
+    storage_status = storage_service.check_health()
+
+    # 5. Check API Keys configured
     gnani_ok = bool(settings.GNANI_API_KEY and len(settings.GNANI_API_KEY) > 5)
     gemini_ok = bool(settings.GEMINI_API_KEY and len(settings.GEMINI_API_KEY) > 5)
     llm_ok = gemini_ok or bool(settings.LLM_API_KEY and len(settings.LLM_API_KEY) > 5)
 
     return HealthResponse(
-        status="healthy" if db_status == "healthy" else "degraded",
+        status="healthy" if (
+            db_status == "healthy"
+            and redis_status == "connected"
+            and worker_status.startswith("running")
+            and storage_status.startswith("healthy")
+        ) else "degraded",
         database=db_status,
         redis=redis_status,
+        worker=worker_status,
         storage=storage_status,
         gnani_configured=gnani_ok,
         llm_configured=llm_ok,

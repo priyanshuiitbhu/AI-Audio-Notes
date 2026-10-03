@@ -91,7 +91,15 @@ async def upload_audio_note(
     db.refresh(note)
 
     # Enqueue background job
-    enqueue_audio_job(note.id)
+    if not enqueue_audio_job(note.id):
+        note.status = NoteStatus.FAILED.value
+        note.current_stage = "Failed: background processing queue is unavailable"
+        note.error_message = "The processing queue is temporarily unavailable. Please retry shortly."
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=note.error_message,
+        )
 
     logger.info(f"Note {note.id} created and queued successfully.")
     return NoteUploadResponse(
@@ -238,7 +246,15 @@ def retry_note(
     note.retry_count += 1
     db.commit()
 
-    enqueue_audio_job(note.id)
+    if not enqueue_audio_job(note.id):
+        note.status = NoteStatus.FAILED.value
+        note.current_stage = "Failed: background processing queue is unavailable"
+        note.error_message = "The processing queue is temporarily unavailable. Please retry shortly."
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=note.error_message,
+        )
     logger.info(f"Note {note_id} re-queued (retry count: {note.retry_count})")
 
     return NoteRetryResponse(

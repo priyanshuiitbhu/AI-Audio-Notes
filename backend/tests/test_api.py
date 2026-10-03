@@ -30,6 +30,7 @@ def test_health_check_endpoint():
     assert "status" in data
     assert "database" in data
     assert "redis" in data
+    assert "worker" in data
     assert "storage" in data
     assert "timestamp" in data
 
@@ -60,6 +61,18 @@ def test_upload_empty_file_rejected():
     response = client.post("/api/notes/upload", files=files)
     assert response.status_code == 400
     assert "empty" in response.json()["detail"].lower()
+
+
+def test_upload_reports_queue_unavailable():
+    """Production-style queue failures must be visible instead of silently losing work."""
+    audio_content = b"RIFF....WAVEfmt ...." + b"\x00" * 2000
+    files = {"file": ("queue_test.wav", io.BytesIO(audio_content), "audio/wav")}
+
+    with patch("app.api.notes.enqueue_audio_job", return_value=False):
+        response = client.post("/api/notes/upload", files=files, data={"language_code": "en-IN"})
+
+    assert response.status_code == 503
+    assert "queue" in response.json()["detail"].lower()
 
 
 def test_upload_unsupported_file_format():

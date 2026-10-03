@@ -70,6 +70,7 @@ class HealthResponse(BaseModel):
     status: str
     database: str
     redis: str
+    worker: str
     storage: str
     gnani_configured: bool
     llm_configured: bool

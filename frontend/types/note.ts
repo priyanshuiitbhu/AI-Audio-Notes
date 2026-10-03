@@ -64,6 +64,7 @@ export interface HealthResponse {
   status: string;
   database: string;
   redis: string;
+  worker: string;
   storage: string;
   gnani_configured: boolean;
   llm_configured: boolean;

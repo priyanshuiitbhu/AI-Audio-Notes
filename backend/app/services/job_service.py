@@ -1,14 +1,25 @@
 import logging
 import threading
 from typing import Optional
+from urllib.parse import urlsplit
 import redis
-from rq import Queue
+from rq import Queue, Worker
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 _redis_client: Optional[redis.Redis] = None
 _rq_queue: Optional[Queue] = None
+
+
+def _safe_redis_location() -> str:
+    """Return a log-safe Redis location without credentials or query parameters."""
+    try:
+        parsed = urlsplit(settings.REDIS_URL)
+        database = parsed.path or "/0"
+        return f"{parsed.scheme}://{parsed.hostname or 'unknown'}:{parsed.port or 6379}{database}"
+    except Exception:
+        return "configured Redis service"
 
 
 def get_redis_client() -> Optional[redis.Redis]:
@@ -20,7 +31,7 @@ def get_redis_client() -> Optional[redis.Redis]:
             _redis_client = r
             logger.info("Successfully connected to Redis.")
         except Exception as e:
-            logger.warning(f"Could not connect to Redis at {settings.REDIS_URL}: {e}")
+            logger.warning(f"Could not connect to Redis at {_safe_redis_location()}: {type(e).__name__}")
             _redis_client = None
     return _redis_client
 
@@ -43,6 +54,18 @@ def check_redis_health() -> str:
     return "disconnected"
 
 
+def check_worker_health() -> str:
+    """Report whether at least one live RQ worker is registered in Redis."""
+    try:
+        r = get_redis_client()
+        if r is None:
+            return "disconnected"
+        workers = Worker.all(connection=r)
+        return f"running ({len(workers)})" if workers else "not_running"
+    except Exception:
+        return "unknown"
+
+
 def enqueue_audio_job(note_id: str) -> bool:
     """
     Enqueues an audio processing job.
@@ -58,15 +81,19 @@ def enqueue_audio_job(note_id: str) -> bool:
             job = queue.enqueue(
                 process_audio_note,
                 note_id,
-                job_timeout="15m",
+                job_timeout=settings.RQ_JOB_TIMEOUT_SECONDS,
                 result_ttl=86400,
             )
             logger.info(f"[note_id={note_id}] Successfully enqueued job to Redis RQ (Job ID: {job.id})")
             return True
     except Exception as e:
-        logger.warning(f"[note_id={note_id}] Redis enqueue failed ({e}), falling back to background thread.")
+        logger.warning(f"[note_id={note_id}] Redis enqueue failed ({type(e).__name__}).")
 
-    # Graceful background thread fallback
+    if settings.REQUIRE_REDIS_QUEUE:
+        logger.error(f"[note_id={note_id}] Redis/RQ is required but no queue is available.")
+        return False
+
+    # Local-development fallback. Production sets REQUIRE_REDIS_QUEUE=true.
     logger.info(f"[note_id={note_id}] Dispatching processing to background thread worker.")
     thread = threading.Thread(
         target=process_audio_note,

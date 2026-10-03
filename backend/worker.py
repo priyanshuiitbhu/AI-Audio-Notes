@@ -2,8 +2,9 @@ import sys
 import os
 import time
 import logging
+from urllib.parse import urlsplit
 import redis
-from rq import Worker, Queue, Connection
+from rq import Worker
 from app.config import settings
 
 logging.basicConfig(
@@ -15,16 +16,24 @@ logger = logging.getLogger("audio_worker_process")
 listen = ["audio_jobs"]
 
 
+def safe_redis_location() -> str:
+    try:
+        parsed = urlsplit(settings.REDIS_URL)
+        database = parsed.path or "/0"
+        return f"{parsed.scheme}://{parsed.hostname or 'unknown'}:{parsed.port or 6379}{database}"
+    except Exception:
+        return "configured Redis service"
+
+
 def run_worker():
-    logger.info(f"Connecting to Redis at {settings.REDIS_URL}...")
+    logger.info(f"Connecting to Redis at {safe_redis_location()}...")
     while True:
         try:
             conn = redis.from_url(settings.REDIS_URL)
             conn.ping()
             logger.info("Connected to Redis. Starting RQ Worker listening to 'audio_jobs' queue...")
-            with Connection(conn):
-                worker = Worker(map(Queue, listen))
-                worker.work(with_scheduler=True)
+            worker = Worker(listen, connection=conn)
+            worker.work(with_scheduler=True)
         except redis.exceptions.ConnectionError:
             logger.warning("Could not connect to Redis. Retrying in 5 seconds...")
             time.sleep(5)

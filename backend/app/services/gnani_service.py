@@ -336,12 +336,40 @@ class GnaniService:
 
         chunks, temp_cleanup = split_audio_file(file_path, chunk_duration_sec=chunk_duration_sec)
         total_chunks = len(chunks)
+        source_path = os.path.realpath(file_path)
+        chunk_cleanup = [path for path in chunks if os.path.realpath(path) != source_path]
 
-        if total_chunks <= 1 and duration is not None and duration <= max_single_duration:
-            if progress_callback:
-                progress_callback(40, "Transcribing audio with Gnani ASR...")
-            result = self.transcribe_file_single(file_path, language_code=language_code)
-            result["duration"] = duration
+        # Never send an unsplit long/unknown-duration recording to the short endpoint.
+        # If local conversion/splitting is unavailable, use Gnani's batch endpoint.
+        if total_chunks <= 1:
+            only_chunk_duration = get_audio_duration_seconds(chunks[0]) if chunks else None
+            chunk_is_safe = (
+                duration is not None
+                and duration <= max_single_duration
+                and only_chunk_duration is not None
+                and only_chunk_duration <= max_single_duration
+            )
+            if chunk_is_safe:
+                if progress_callback:
+                    progress_callback(40, "Transcribing audio with Gnani ASR...")
+                result = self.transcribe_file_single(chunks[0], language_code=language_code)
+                result["duration"] = duration
+                cleanup_temp_files(temp_cleanup)
+                return result
+
+            logger.warning(
+                f"{log_prefix}Audio could not be split into safe short segments; "
+                "routing to Gnani Batch STT."
+            )
+            cleanup_temp_files(temp_cleanup)
+            cleanup_temp_files(chunk_cleanup)
+            result = self.transcribe_batch_long_audio(
+                file_path,
+                language_code=language_code,
+                progress_callback=progress_callback,
+            )
+            if result.get("duration") is None:
+                result["duration"] = duration
             return result
 
         logger.info(f"{log_prefix}Splitting complete: {total_chunks} chunks of ~{chunk_duration_sec}s each")
@@ -364,7 +392,7 @@ class GnaniService:
                 logger.info(f"{log_prefix}Chunk {chunk_num}/{total_chunks} transcribed successfully ({len(chunk_text)} chars)")
         finally:
             cleanup_temp_files(temp_cleanup)
-            cleanup_temp_files(chunks)
+            cleanup_temp_files(chunk_cleanup)
 
         full_transcript = " ".join(transcripts).strip()
         logger.info(f"{log_prefix}All {total_chunks} chunks transcribed. Combined transcript length: {len(full_transcript)} chars.")

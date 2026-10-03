@@ -90,6 +90,54 @@ def test_long_audio_routing_over_28s_chunks_properly(tmp_path):
         assert progress_reports[-1][0] == 70
 
 
+@pytest.mark.parametrize(
+    ("duration", "expected_chunks"),
+    [(30.0, 2), (31.0, 2), (60.0, 3), (120.0, 5), (130.0, 6)],
+)
+def test_required_duration_boundaries_never_send_long_audio_to_short_endpoint(
+    tmp_path, duration, expected_chunks
+):
+    """Every requested boundary uses only <=24s calls to Gnani's short endpoint."""
+    file_path = str(tmp_path / f"boundary_{int(duration)}s.wav")
+    create_dummy_wav(file_path, duration)
+    service = GnaniService(api_key="mock_key")
+    called_durations = []
+
+    def mock_transcribe_chunk(chunk_path, language_code="en-IN"):
+        chunk_duration = get_audio_duration_seconds(chunk_path)
+        called_durations.append(chunk_duration)
+        return {"transcript": f"segment_{len(called_durations)}"}
+
+    with patch.object(service, "transcribe_file_single", side_effect=mock_transcribe_chunk):
+        result = service.transcribe(file_path, language_code="en-IN")
+
+    assert result["chunk_count"] == expected_chunks
+    assert len(called_durations) == expected_chunks
+    assert all(value is not None and value <= 24.01 for value in called_durations)
+    assert get_audio_duration_seconds(file_path) == pytest.approx(duration, abs=0.05)
+
+
+def test_failed_split_uses_batch_and_preserves_source_file(tmp_path):
+    """A long file is never sent whole to the 30-second endpoint if splitting fails."""
+    file_path = str(tmp_path / "unsplittable_130s.wav")
+    create_dummy_wav(file_path, 130.0)
+    service = GnaniService(api_key="mock_key")
+
+    with patch("app.services.gnani_service.split_audio_file", return_value=([file_path], [])):
+        with patch.object(
+            service,
+            "transcribe_batch_long_audio",
+            return_value={"transcript": "batch transcript", "request_id": "batch-1"},
+        ) as mock_batch:
+            with patch.object(service, "transcribe_file_single") as mock_single:
+                result = service.transcribe(file_path, language_code="en-IN")
+
+    assert result["transcript"] == "batch transcript"
+    mock_batch.assert_called_once()
+    mock_single.assert_not_called()
+    assert os.path.exists(file_path)
+
+
 def test_duration_limit_fallback_reroutes_to_chunks(tmp_path):
     """
     If normal STT unexpectedly raises duration limit error (e.g. strict 30s),

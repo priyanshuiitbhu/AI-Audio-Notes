@@ -1,7 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 from typing import List, Optional
-import os
 
 
 class Settings(BaseSettings):
@@ -26,6 +25,11 @@ class Settings(BaseSettings):
         default="redis://localhost:6379/0",
         description="Redis connection URL for task queue."
     )
+    REQUIRE_REDIS_QUEUE: bool = Field(
+        default=False,
+        description="Fail uploads when Redis/RQ is unavailable instead of using the local development thread fallback."
+    )
+    RQ_JOB_TIMEOUT_SECONDS: int = 3600
 
     # Gnani ASR Credentials
     GNANI_API_KEY: str = Field(
@@ -69,7 +73,6 @@ class Settings(BaseSettings):
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:8000",
-        "*"
     ]
 
 

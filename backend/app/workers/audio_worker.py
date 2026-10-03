@@ -1,4 +1,5 @@
 import os
+import tempfile
 import logging
 from datetime import datetime, timezone
 from app.database import SessionLocal
@@ -57,8 +58,9 @@ def process_audio_note(note_id: str):
 
             try:
                 local_path = storage_service.get_local_file_path(note.storage_key)
-                if "/tmp/" in local_path or "NamedTemporaryFile" in local_path:
-                    is_temp_file = True
+                temp_root = os.path.realpath(tempfile.gettempdir())
+                resolved_path = os.path.realpath(local_path)
+                is_temp_file = os.path.commonpath([temp_root, resolved_path]) == temp_root
             except Exception as e:
                 logger.error(f"[note_id={note_id}] Failed to retrieve file from storage: {e}")
                 raise RuntimeError(f"Storage retrieval failed: {str(e)}")

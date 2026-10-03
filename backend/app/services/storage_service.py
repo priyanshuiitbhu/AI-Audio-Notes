@@ -31,6 +31,11 @@ class StorageProvider(ABC):
         """Deletes file by storage_key."""
         pass
 
+    @abstractmethod
+    def check_health(self) -> str:
+        """Returns a public, non-secret health description."""
+        pass
+
 
 class LocalStorageProvider(StorageProvider):
     def __init__(self, base_dir: str = "storage"):
@@ -78,6 +83,15 @@ class LocalStorageProvider(StorageProvider):
             return True
         return False
 
+    def check_health(self) -> str:
+        try:
+            os.makedirs(self.base_dir, exist_ok=True)
+            if os.path.isdir(self.base_dir) and os.access(self.base_dir, os.W_OK):
+                return "healthy (persistent filesystem)"
+        except Exception:
+            pass
+        return "unhealthy"
+
 
 class S3StorageProvider(StorageProvider):
     def __init__(
@@ -100,11 +114,6 @@ class S3StorageProvider(StorageProvider):
             region_name=region,
             config=Config(signature_version="s3v4"),
         )
-        # Verify or create bucket
-        try:
-            self.client.head_bucket(Bucket=self.bucket)
-        except Exception as e:
-            logger.info(f"Checking/creating S3 bucket {self.bucket}: {e}")
 
     def save_file(self, note_id: str, filename: str, content: bytes) -> str:
         clean_name = sanitize_filename(filename)
@@ -137,9 +146,18 @@ class S3StorageProvider(StorageProvider):
             logger.error(f"Failed to delete S3 object {storage_key}: {e}")
             return False
 
+    def check_health(self) -> str:
+        try:
+            self.client.head_bucket(Bucket=self.bucket)
+            return "healthy (s3)"
+        except Exception:
+            return "unhealthy"
+
 
 def get_storage_service() -> StorageProvider:
-    if settings.STORAGE_PROVIDER == "s3" and settings.STORAGE_ACCESS_KEY and settings.STORAGE_SECRET_KEY:
+    if settings.STORAGE_PROVIDER == "s3":
+        if not settings.STORAGE_ACCESS_KEY or not settings.STORAGE_SECRET_KEY:
+            raise RuntimeError("STORAGE_PROVIDER=s3 requires STORAGE_ACCESS_KEY and STORAGE_SECRET_KEY.")
         return S3StorageProvider(
             bucket=settings.STORAGE_BUCKET,
             endpoint_url=settings.STORAGE_ENDPOINT,
@@ -147,7 +165,9 @@ def get_storage_service() -> StorageProvider:
             secret_key=settings.STORAGE_SECRET_KEY,
             region=settings.STORAGE_REGION,
         )
-    return LocalStorageProvider(base_dir=settings.STORAGE_LOCAL_DIR)
+    if settings.STORAGE_PROVIDER == "local":
+        return LocalStorageProvider(base_dir=settings.STORAGE_LOCAL_DIR)
+    raise RuntimeError(f"Unsupported STORAGE_PROVIDER: {settings.STORAGE_PROVIDER}")
 
 
 storage_service = get_storage_service()
