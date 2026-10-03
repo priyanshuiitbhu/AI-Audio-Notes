@@ -90,8 +90,8 @@ Users upload an audio recording in any standard format (MP3, WAV, M4A, AAC, OGG,
                                ┌────────────────┴────────────────┐
                                ▼                                 ▼
                       ┌──────────────────┐             ┌──────────────────┐
-                      │ Gnani Prisma ASR │             │ LLM Summarization│
-                      │  (STT REST/Batch)│             │ (OpenAI / Groq)  │
+                      │ Gnani Prisma ASR │             │  Google Gemini   │
+                      │(Normal & Chunks) │             │  (google-genai)  │
                       └──────────────────┘             └──────────────────┘
 ```
 
@@ -200,7 +200,7 @@ cp .env.example .env
 | `GEMINI_API_KEY` | Google Gemini API Key (Backend only, never exposed to frontend) | `AIzaSy...` |
 | `GEMINI_MODEL` | Google Gemini Model Identifier | `gemini-3.5-flash-lite` |
 | `NEXT_PUBLIC_API_URL` | FastAPI backend URL for frontend | `http://localhost:8000/api` |
-| `NEXT_PUBLIC_GITHUB_REPO_URL` | GitHub repository link for `/architecture` | `https://github.com/your-username/Audio-Notes-Platform` |
+| `NEXT_PUBLIC_GITHUB_REPO_URL` | GitHub repository link for `/architecture` | `https://github.com/priyanshuiitbhu/AI-Audio-Notes.git` |
 
 ---
 
@@ -278,7 +278,7 @@ source venv/bin/activate
 pytest -v
 ```
 
-### Test Suite Coverage (22 Unit & Integration Tests):
+### Test Suite Coverage (27 Unit & Integration Tests):
 
 **API & Pipeline Tests (`test_api.py`)**:
 - `test_health_check_endpoint`: Verifies `/api/health` reports DB, Redis, storage, and Gemini status.
@@ -288,11 +288,18 @@ pytest -v
 - `test_get_notes_list_and_sorting`: Confirms `/api/notes` returns records sorted newest first.
 - `test_get_note_detail`: Validates full note payload with transcript and summary.
 - `test_get_note_not_found`: Confirms non-existent IDs return HTTP 404.
-- `test_status_endpoint`: Confirms lightweight polling format for frontend progress bars.
+- `test_status_endpoint`: Confirms lightweight polling format for frontend progress bars (`has_transcript` support).
 - `test_retry_failed_note`: Confirms `POST /api/notes/:id/retry` resets status to `QUEUED` and re-dispatches worker.
 - `test_delete_note`: Confirms deletion removes both the DB record and object storage file.
 - `test_worker_pipeline_success`: Validates end-to-end background transcription and summary generation.
 - `test_worker_pipeline_transcription_failure`: Validates friendly error message recording on service timeout.
+- `test_get_note_audio_stream`: Validates `GET /api/notes/:id/audio` returns streaming audio with proper content-type headers.
+
+**Long-Audio Routing & Chunking Tests (`test_long_audio_routing.py`)**:
+- `test_audio_duration_detection`: Verifies accurate audio duration detection for multiple durations (10s to 130s).
+- `test_short_audio_routing_under_28s`: Confirms audio <= 28s routes directly to single Gnani REST STT.
+- `test_long_audio_routing_over_28s_chunks_properly`: Confirms audio > 28s (e.g. 130s = 2m10s) splits into ~24s chunks, transcribes each sequentially, and combines transcripts in order.
+- `test_duration_limit_fallback_reroutes_to_chunks`: Confirms automatic fallback re-routing to chunking if normal STT throws duration error.
 
 **Google Gemini Summarization Tests (`test_gemini_summary.py`)**:
 - `test_gemini_empty_or_whitespace_transcript`: Verifies immediate graceful message without calling Gemini.
@@ -325,26 +332,38 @@ npm run build
 | `GET` | `/api/notes/{id}/status` | Lightweight status polling endpoint | `{"id": "...", "status": "TRANSCRIBING", "progress": 50}` |
 | `POST` | `/api/notes/{id}/retry` | Re-queue a failed note | `{"id": "...", "status": "QUEUED", "message": "Re-queued"}` |
 | `DELETE` | `/api/notes/{id}` | Delete note record and storage file | `{"success": true, "message": "Deleted"}` |
+| `GET` | `/api/notes/{id}/audio` | Stream original audio for embedded HTML5 player | Binary audio stream (`audio/wav`, `audio/x-m4a`, etc.) |
 | `GET` | `/api/health` | Service health check | `{"status": "healthy", "database": "healthy", "redis": "connected"}` |
 
 ---
 
-## Long Audio Processing
+## Long Audio Processing (Real Implementation)
 
-Gnani's REST STT endpoint imposes a strict 60-second audio duration ceiling (with an ideal duration of ≤ 30s). Recordings exceeding 60 seconds return an HTTP 400 error (`Audio duration exceeds maximum limit of 60 seconds`).
+Gnani's single-file REST STT endpoint (`POST https://api.vachana.ai/stt/v3`) enforces a strict duration limit of **30.0 seconds**. Submitting audio exceeding 30 seconds triggers an API rejection (`Audio duration exceeds maximum allowed duration of 30 seconds`).
 
-To comfortably handle recordings of **2 minutes, 10 minutes, or longer**, the Audio Notes Platform implements a dual-layer strategy:
+To comfortably and reliably transcribe recordings of **2 minutes, 10 minutes, or longer**, the Audio Notes Platform implements automated duration routing and deterministic audio chunking:
 
-1. **Gnani STT Batch Jobs API (`POST /stt/v3/batch/jobs`)**:
-   - For long recordings (MP3, M4A, AAC, FLAC), the worker creates an asynchronous batch job on Gnani's infrastructure.
-   - The worker calls `POST /stt/v3/batch/jobs/:id/start` and polls `GET /stt/v3/batch/jobs/:id` every 5 seconds.
-   - Once completed, the worker retrieves the file transcript URL and downloads the full transcript.
-   - Emits granular stage progress updates (`Transcribing batch audio (IN_PROGRESS)...`) so the UI stays active.
+1. **Duration Detection & Threshold Routing**:
+   - The worker computes the exact duration before initiating transcription:
+     - **Short Audio (≤ 28.0s)**: Directly routed to `POST /stt/v3` for fast, single-pass transcription.
+     - **Long Audio (> 28.0s)**: Automatically routed to the deterministic audio chunking pipeline.
 
-2. **Deterministic Wave Segment Chunking**:
-   - For WAV recordings, pure Python `wave` chunking splits the audio into sequential 40-second chunks without requiring external binaries.
-   - Each chunk is transcribed sequentially via the REST STT API with ITN enabled.
-   - The worker calculates progress based on chunk index (e.g. `Transcribing segment 2 of 4 (52%)...`) and stitches the transcripts into a single unified output.
+2. **Deterministic 24-Second Audio Chunking**:
+   - Converts the audio container into standard 16-bit linear PCM WAV using macOS built-in `/usr/bin/afconvert` (fast, zero external Python dependencies) or `ffmpeg` fallback for Linux/Docker environments.
+   - Partitions the audio into clean sequential **24-second segments** (a safe margin below Gnani's 30-second ceiling) without frame loss.
+   - For example, a 2-minute 10-second (126.3s) audio file is split into 6 chunks (five 24.0s chunks + one 6.3s chunk).
+
+3. **Sequential Chunk Transcription & Real-Time Progress**:
+   - Each chunk is dispatched sequentially to Gnani ASR with exponential backoff on rate limits.
+   - The worker reports dynamic, non-fake progress updates to PostgreSQL (`Transcribing segment 1 of 6...`, `Transcribing segment 2 of 6...`).
+   - Temporary chunk files are cleaned up immediately upon completion.
+
+4. **Ordered Reconstruction & Gemini Summarization**:
+   - Chunk transcripts are reconstructed in exact chronological sequence into a complete, unified transcript.
+   - The complete transcript is saved to PostgreSQL, then submitted to Google Gemini for structured summarization.
+
+5. **Self-Healing Fallback**:
+   - If a borderline recording (e.g., 29.5s) ever trips Gnani's duration limit on the single-file endpoint, the error is intercepted and automatically re-routed into the chunking pipeline without user intervention.
 
 ---
 
