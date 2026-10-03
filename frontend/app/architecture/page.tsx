@@ -164,8 +164,8 @@ export default function ArchitecturePage() {
             </h3>
             <ul className="text-xs text-indigo-900 space-y-1.5 list-disc pl-4">
               <li>Audio duration detection and sample rate inspection</li>
-              <li>Calling Gnani ASR REST API or orchestrating Batch STT jobs</li>
-              <li>Incremental progress updates (<code className="bg-indigo-100 px-1 rounded">TRANSCRIBING</code> 30%..70%)</li>
+              <li>Direct Gnani STT for short audio (&le; 28s) or ordered chunking pipeline for long audio (&gt; 28s)</li>
+              <li>Incremental progress updates (<code className="bg-indigo-100 px-1 rounded">TRANSCRIBING</code> 25%..70%)</li>
               <li>Database persistence of complete transcribed text</li>
               <li>Prompting LLM with structured meeting note guidelines</li>
               <li>Database persistence of summary, setting status to <code className="bg-indigo-100 px-1 rounded">COMPLETED</code></li>
@@ -261,14 +261,18 @@ export default function ArchitecturePage() {
         <div className="p-6 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-3">
           <div className="flex items-center gap-2 text-indigo-600">
             <Cpu className="w-5 h-5" />
-            <h3 className="text-base font-bold text-slate-900">6. Long Audio Processing</h3>
+            <h3 className="text-base font-bold text-slate-900">6. Long Audio Processing (Real Implementation)</h3>
           </div>
           <p className="text-xs text-slate-600 leading-relaxed">
-            Gnani REST STT enforces a strict duration limit (optimal duration &le; 25s). To comfortably handle recordings of <strong>2 minutes, 10 minutes, or longer</strong> without blocking the user, long audio is processed asynchronously using real, tested strategies:
+            The Gnani REST STT endpoint enforces a strict maximum duration limit of <strong>30 seconds</strong>. To reliably transcribe recordings of <strong>2 minutes, 10 minutes, or longer</strong> without hitting API duration rejections, our backend implements automated duration detection and deterministic audio chunking:
           </p>
-          <ul className="text-xs text-slate-600 list-disc pl-4 space-y-1">
-            <li><strong>Deterministic Audio Chunking (Real Implementation):</strong> Pure Python <code>wave</code> splitting partitions audio into ~25s sequential segments without requiring external binaries. Each segment is transcribed sequentially with live progress tracking (e.g. <em>&quot;Transcribing segment 2 of 4...&quot;</em>) and stitched into a unified transcript.</li>
-            <li><strong>Batch STT API Integration:</strong> For cloud workflows, the worker can initiate an asynchronous batch job via <code>POST /stt/v3/batch/jobs</code>, poll until completion, and retrieve the final transcript file.</li>
+          <ul className="text-xs text-slate-600 list-disc pl-4 space-y-1.5">
+            <li><strong>Short Audio (&le; 28s):</strong> Files within the safe limit are routed directly to the single Gnani REST STT endpoint (<code>POST /stt/v3</code>), minimizing latency.</li>
+            <li><strong>Long Audio (&gt; 28s):</strong> The backend converts the audio to standard 16-bit linear PCM and partitions it into sequential <strong>24-second chunks</strong> (a safe margin below Gnani&apos;s 30s ceiling).</li>
+            <li><strong>Sequential Chunk Transcription:</strong> Each chunk is dispatched sequentially with exponential backoff on rate limits. The frontend receives live, real-time progress updates (e.g., <em>&quot;Transcribing segment 2 of 6...&quot;</em>).</li>
+            <li><strong>Ordered Reconstruction:</strong> The worker concatenates transcripts in original chronological sequence into a complete, unified transcript.</li>
+            <li><strong>Gemini Summarization:</strong> The complete transcript is then submitted to Google Gemini for holistic document summarization.</li>
+            <li><strong>Self-Healing Fallback:</strong> If normal STT ever rejects a borderline file due to duration limits, the system catches the error and automatically re-routes the file through the chunking pipeline.</li>
           </ul>
         </div>
 

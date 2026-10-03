@@ -38,6 +38,12 @@ backend/storage/
 *.db
 *.sqlite
 *.sqlite3
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.aac
+*.ogg
 
 # OS Files
 .DS_Store

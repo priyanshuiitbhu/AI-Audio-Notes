@@ -85,14 +85,21 @@ def process_audio_note(note_id: str):
                 except Exception as pe:
                     logger.debug(f"[note_id={note_id}] Progress update error: {pe}")
 
-            logger.info(f"[note_id={note_id}] Calling Gnani STT API (duration: {note.duration_seconds}s)")
+            if note.duration_seconds:
+                logger.info(f"[note_id={note_id}] Audio duration: {note.duration_seconds} seconds")
+
+            logger.info(f"[note_id={note_id}] Calling Gnani STT service...")
             try:
                 asr_result = gnani_service.transcribe(
                     file_path=local_path,
                     language_code=note.language_code,
                     progress_callback=update_transcription_progress,
+                    note_id=note_id,
                 )
                 transcript = asr_result.get("transcript", "").strip()
+                if not note.duration_seconds and asr_result.get("duration"):
+                    note.duration_seconds = round(asr_result["duration"], 2)
+                    db.commit()
             except GnaniAuthError as e:
                 logger.error(f"[note_id={note_id}] Gnani authentication error: {e}")
                 _fail_note(db, note_id, "Transcription failed. We couldn't authenticate with the Gnani transcription service. Please verify server API configuration.")

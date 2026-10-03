@@ -5,7 +5,7 @@ import logging
 from typing import Optional, Callable, Dict, Any, List
 import requests
 from app.config import settings
-from app.utils.audio_utils import split_wav_file, cleanup_temp_files, get_audio_duration_seconds
+from app.utils.audio_utils import split_wav_file, split_audio_file, cleanup_temp_files, get_audio_duration_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -294,63 +294,88 @@ class GnaniService:
         file_path: str,
         language_code: str = "en-IN",
         progress_callback: Optional[Callable[[int, str], None]] = None,
+        note_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Unified transcription handler:
-        - For audio <= 55 seconds: runs fast single-request REST STT.
-        - For audio > 55 seconds:
-          Attempts Batch STT or splits into ordered chunks, transcribes each with progress updates,
-          and concatenates the results seamlessly.
+        - For audio <= 28 seconds: routes to direct Gnani STT REST API (strict Gnani limit is 30s).
+        - For audio > 28 seconds (or if single REST throws duration-limit error):
+          Splits into safe ordered PCM chunks (<= 24s each), transcribes each chunk
+          sequentially with real-time per-chunk progress reporting, and recombines the full transcript.
         """
+        max_single_duration = 28.0
+        chunk_duration_sec = 24
+        log_prefix = f"[note_id={note_id}] " if note_id else ""
+
         duration = get_audio_duration_seconds(file_path)
-        logger.info(f"Audio file: {file_path}, detected duration: {duration}s")
+        logger.info(f"{log_prefix}Audio file: {file_path}, detected duration: {duration}s")
 
-        # Case 1: Short audio (<= 25 seconds)
-        if duration is not None and duration <= 25:
+        # 1. Short audio routing (<= 28s)
+        if duration is not None and duration <= max_single_duration:
+            logger.info(f"{log_prefix}Audio duration: {duration:.2f}s <= {max_single_duration}s threshold.")
+            logger.info(f"{log_prefix}Processing strategy: NORMAL_STT")
             if progress_callback:
-                progress_callback(40, "Transcribing with Gnani ASR...")
-            return self.transcribe_file_single(file_path, language_code=language_code)
+                progress_callback(40, "Transcribing audio with Gnani ASR...")
+            try:
+                result = self.transcribe_file_single(file_path, language_code=language_code)
+                result["duration"] = duration
+                return result
+            except GnaniInvalidAudioError as e:
+                err_lower = str(e).lower()
+                if "exceeds maximum allowed duration" in err_lower or "30 seconds" in err_lower or "duration" in err_lower:
+                    logger.warning(f"{log_prefix}Normal STT rejected audio for duration: {e}. Re-routing to CHUNKED_STT strategy.")
+                else:
+                    raise
+            except Exception:
+                raise
 
-        # Case 2: Long audio (> 25 seconds or unknown duration)
-        # First, if file is WAV, we split into safe ~25s chunks for deterministic fast progress updates
-        ext = os.path.splitext(file_path)[1].lower()
-        if ext == ".wav":
-            chunks = split_wav_file(file_path, chunk_duration_sec=25)
-            if len(chunks) > 1:
-                logger.info(f"Processing long audio via {len(chunks)} chunks")
-                transcripts = []
-                try:
-                    for idx, chunk in enumerate(chunks):
-                        if progress_callback:
-                            # Map progress from 35% to 70% across chunks
-                            pct = 35 + int(((idx + 1) / len(chunks)) * 35)
-                            progress_callback(pct, f"Transcribing segment {idx + 1} of {len(chunks)}...")
+        # 2. Long audio routing (> 28s or fallback)
+        dur_str = f"{duration:.2f}s" if duration is not None else "unknown"
+        logger.info(f"{log_prefix}Audio duration: {dur_str} > {max_single_duration}s.")
+        logger.info(f"{log_prefix}Processing strategy: CHUNKED_STT")
 
-                        chunk_res = self.transcribe_file_single(chunk, language_code=language_code)
-                        text = chunk_res.get("transcript", "").strip()
-                        if text:
-                            transcripts.append(text)
-                finally:
-                    cleanup_temp_files(chunks)
+        chunks, temp_cleanup = split_audio_file(file_path, chunk_duration_sec=chunk_duration_sec)
+        total_chunks = len(chunks)
 
-                full_text = " ".join(transcripts).strip()
-                return {
-                    "transcript": full_text,
-                    "request_id": f"chunked_{len(chunks)}",
-                    "model": "gnani-prisma-v2.5",
-                    "duration": duration,
-                }
+        if total_chunks <= 1 and duration is not None and duration <= max_single_duration:
+            if progress_callback:
+                progress_callback(40, "Transcribing audio with Gnani ASR...")
+            result = self.transcribe_file_single(file_path, language_code=language_code)
+            result["duration"] = duration
+            return result
 
-        # For MP3/M4A/FLAC/etc. > 55s, use Gnani Batch STT API
+        logger.info(f"{log_prefix}Splitting complete: {total_chunks} chunks of ~{chunk_duration_sec}s each")
+        transcripts: List[str] = []
+
         try:
-            return self.transcribe_batch_long_audio(
-                file_path,
-                language_code=language_code,
-                progress_callback=progress_callback,
-            )
-        except Exception as e:
-            logger.warning(f"Batch STT failed ({e}), attempting REST single transcribe fallback...")
-            return self.transcribe_file_single(file_path, language_code=language_code)
+            for idx, chunk in enumerate(chunks):
+                chunk_num = idx + 1
+                # Real progress tracking: maps 25% to 70% across chunks
+                pct = int(25 + (chunk_num / total_chunks) * 45)
+                stage_desc = f"Transcribing segment {chunk_num} of {total_chunks}..."
+                logger.info(f"{log_prefix}Chunk {chunk_num}/{total_chunks}: {stage_desc}")
+                if progress_callback:
+                    progress_callback(pct, stage_desc)
+
+                chunk_res = self.transcribe_file_single(chunk, language_code=language_code)
+                chunk_text = chunk_res.get("transcript", "").strip()
+                if chunk_text:
+                    transcripts.append(chunk_text)
+                logger.info(f"{log_prefix}Chunk {chunk_num}/{total_chunks} transcribed successfully ({len(chunk_text)} chars)")
+        finally:
+            cleanup_temp_files(temp_cleanup)
+            cleanup_temp_files(chunks)
+
+        full_transcript = " ".join(transcripts).strip()
+        logger.info(f"{log_prefix}All {total_chunks} chunks transcribed. Combined transcript length: {len(full_transcript)} chars.")
+
+        return {
+            "transcript": full_transcript,
+            "request_id": f"chunked_{total_chunks}",
+            "model": "gnani-prisma-v2.5",
+            "duration": duration,
+            "chunk_count": total_chunks,
+        }
 
 
 gnani_service = GnaniService()
