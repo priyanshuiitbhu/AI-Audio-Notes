@@ -1,7 +1,9 @@
+import os
 import uuid
 import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.note import Note, NoteStatus, get_utc_now
@@ -171,8 +173,44 @@ def get_note_status(
         progress=note.progress,
         current_stage=note.current_stage,
         error_message=note.error_message,
+        has_transcript=bool(note.transcript and note.transcript.strip()),
         completed_at=note.completed_at,
     )
+
+
+@router.get("/{note_id}/audio")
+def get_note_audio(
+    note_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Streams original audio recording securely without exposing storage credentials.
+    """
+    note = db.query(Note).filter(Note.id == note_id).first()
+    if not note:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
+
+    try:
+        local_path = storage_service.get_local_file_path(note.storage_key)
+        if local_path and os.path.isfile(local_path):
+            return FileResponse(
+                path=local_path,
+                media_type=note.mime_type or "audio/wav",
+                filename=note.file_name,
+            )
+    except Exception:
+        pass
+
+    try:
+        content = storage_service.get_file_bytes(note.storage_key)
+        return Response(
+            content=content,
+            media_type=note.mime_type or "audio/wav",
+            headers={"Content-Disposition": f'inline; filename="{note.file_name}"'},
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch audio for note {note_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audio file not found in storage.")
 
 
 @router.post("/{note_id}/retry", response_model=NoteRetryResponse)

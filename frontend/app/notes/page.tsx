@@ -12,8 +12,10 @@ import {
   RefreshCw,
   FolderOpen,
   Trash2,
+  Check,
+  X,
 } from "lucide-react";
-import { getNotes, deleteNote } from "@/lib/api";
+import { getNotes, deleteNote, retryNote } from "@/lib/api";
 import { NoteListItem } from "@/types/note";
 
 export default function NotesPage() {
@@ -21,6 +23,7 @@ export default function NotesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
 
   const fetchNotes = async () => {
     setLoading(true);
@@ -55,25 +58,44 @@ export default function NotesPage() {
     }
   };
 
+  const handleRetry = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setRetryingId(id);
+    try {
+      await retryNote(id);
+      await fetchNotes();
+    } catch (err: any) {
+      alert(err.message || "Failed to retry processing.");
+    } finally {
+      setRetryingId(null);
+    }
+  };
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case "COMPLETED":
         return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">
-            Completed
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">
+            <Check className="w-3 h-3 text-emerald-700" />
+            ✓ Completed
           </span>
         );
       case "FAILED":
         return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800">
-            Processing failed
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800">
+            <X className="w-3 h-3 text-rose-700" />
+            ✕ Failed
           </span>
         );
       default:
         return (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">
-            <Loader2 className="w-3 h-3 animate-spin" />
-            Processing...
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-600"></span>
+            </span>
+            ● Processing
           </span>
         );
     }
@@ -203,27 +225,43 @@ export default function NotesPage() {
                     ) : note.status === "COMPLETED" ? (
                       "Transcript generated successfully."
                     ) : note.status === "FAILED" ? (
-                      <span className="text-rose-600">Failed to process audio file.</span>
+                      <span className="text-rose-600 font-medium">Processing failed. Click Retry to re-process.</span>
+                    ) : note.status === "SUMMARIZING" ? (
+                      <span className="text-amber-700 font-medium">Summarizing...</span>
+                    ) : note.status === "TRANSCRIBING" ? (
+                      <span className="text-amber-700 font-medium">Transcribing audio...</span>
                     ) : (
-                      <span className="text-amber-600">{note.current_stage || "Processing..."}</span>
+                      <span className="text-amber-700 font-medium">{note.current_stage || "Processing..."}</span>
                     )}
                   </p>
                 </div>
 
                 {/* Bottom Actions */}
                 <div className="flex items-center justify-between pt-4 border-t border-slate-100">
-                  <button
-                    onClick={(e) => handleDelete(note.id, e)}
-                    disabled={deletingId === note.id}
-                    className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition"
-                    title="Delete note"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={(e) => handleDelete(note.id, e)}
+                      disabled={deletingId === note.id}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition"
+                      title="Delete note"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                    {note.status === "FAILED" && (
+                      <button
+                        onClick={(e) => handleRetry(note.id, e)}
+                        disabled={retryingId === note.id}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 transition shadow-sm disabled:opacity-50"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${retryingId === note.id ? "animate-spin" : ""}`} />
+                        <span>{retryingId === note.id ? "Re-queueing..." : "Retry"}</span>
+                      </button>
+                    )}
+                  </div>
 
                   <Link
                     href={`/notes/${note.id}`}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-indigo-600 hover:text-white hover:bg-indigo-600 bg-indigo-50 transition"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold text-indigo-600 hover:text-white hover:bg-indigo-600 bg-indigo-50 transition"
                   >
                     <span>Open</span>
                     <ArrowRight className="w-3.5 h-3.5" />

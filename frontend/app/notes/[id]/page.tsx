@@ -16,6 +16,7 @@ import {
   FileText,
   AlertCircle,
   Loader2,
+  Volume2,
 } from "lucide-react";
 import ProcessingProgress from "@/components/ProcessingProgress";
 import { getNoteDetail, getNoteStatus, retryNote } from "@/lib/api";
@@ -157,6 +158,44 @@ export default function NoteDetailPage() {
     minute: "2-digit",
   });
 
+  const getStatusBadge = () => {
+    switch (note.status) {
+      case "COMPLETED":
+        return (
+          <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800">
+            ✓ Completed
+          </span>
+        );
+      case "SUMMARIZING":
+        return (
+          <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800 flex items-center gap-1.5">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-700" />
+            Generating summary...
+          </span>
+        );
+      case "TRANSCRIBING":
+        return (
+          <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800 flex items-center gap-1.5">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-700" />
+            Transcribing audio...
+          </span>
+        );
+      case "FAILED":
+        return (
+          <span className="px-3 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-800">
+            Processing failed
+          </span>
+        );
+      default:
+        return (
+          <span className="px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-800 flex items-center gap-1.5">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-700" />
+            Queued in pipeline...
+          </span>
+        );
+    }
+  };
+
   return (
     <div className="space-y-8 max-w-5xl mx-auto">
       {/* Top Navigation Row */}
@@ -177,7 +216,11 @@ export default function NoteDetailPage() {
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 transition disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isRetrying ? "animate-spin" : ""}`} />
-              Retry Processing
+              {isRetrying
+                ? "Re-queueing..."
+                : note.transcript
+                ? "Retry Summary"
+                : "Retry Processing"}
             </button>
           )}
         </div>
@@ -218,22 +261,7 @@ export default function NoteDetailPage() {
             </div>
           </div>
 
-          <div>
-            {note.status === "COMPLETED" ? (
-              <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800">
-                Completed
-              </span>
-            ) : note.status === "FAILED" ? (
-              <span className="px-3 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-800">
-                Failed
-              </span>
-            ) : (
-              <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800 flex items-center gap-1.5">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                {note.status}
-              </span>
-            )}
-          </div>
+          <div>{getStatusBadge()}</div>
         </div>
 
         {/* Live Progress Bar if still processing or failed */}
@@ -244,6 +272,8 @@ export default function NoteDetailPage() {
               progress={note.progress}
               currentStage={note.current_stage}
               errorMessage={note.error_message}
+              hasTranscript={Boolean(note.transcript && note.transcript.trim())}
+              noteId={note.id}
               onRetry={handleRetry}
               isRetrying={isRetrying}
             />
@@ -251,8 +281,26 @@ export default function NoteDetailPage() {
         )}
       </div>
 
+      {/* Original Audio Player (when note is completed or audio is stored) */}
+      {(note.status === "COMPLETED" || note.transcript) && (
+        <div className="p-5 sm:p-6 rounded-3xl bg-white border border-slate-200 shadow-sm space-y-2">
+          <div className="flex items-center gap-2 text-slate-800 font-bold text-xs uppercase tracking-wider">
+            <Volume2 className="w-4 h-4 text-indigo-600" />
+            <span>Original Audio</span>
+          </div>
+          <audio
+            controls
+            preload="metadata"
+            className="w-full h-10 rounded-lg accent-indigo-600"
+            src={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api"}/notes/${note.id}/audio`}
+          >
+            Your browser does not support the audio element.
+          </audio>
+        </div>
+      )}
+
       {/* Main Results: Summary and Transcript */}
-      {note.status === "COMPLETED" && (
+      {(note.status === "COMPLETED" || note.transcript) && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
           {/* Summary Card */}
           <div className="p-6 sm:p-8 rounded-3xl bg-white border border-slate-200 shadow-sm space-y-4">
@@ -282,9 +330,25 @@ export default function NoteDetailPage() {
               )}
             </div>
 
-            <div className="prose prose-slate max-w-none text-sm text-slate-700 leading-relaxed whitespace-pre-line">
-              {note.summary || "No summary available."}
-            </div>
+            {note.summary ? (
+              <div className="prose prose-slate max-w-none text-sm text-slate-700 leading-relaxed whitespace-pre-line">
+                {note.summary}
+              </div>
+            ) : note.status === "FAILED" ? (
+              <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs space-y-2">
+                <p className="font-semibold">Summary generation failed, but your transcript is preserved below.</p>
+                <button
+                  onClick={handleRetry}
+                  disabled={isRetrying}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold transition shadow-sm"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isRetrying ? "animate-spin" : ""}`} />
+                  {isRetrying ? "Re-generating..." : "Retry Summary"}
+                </button>
+              </div>
+            ) : (
+              <div className="text-xs text-slate-500 italic">Generating summary with Google Gemini...</div>
+            )}
           </div>
 
           {/* Transcript Card */}

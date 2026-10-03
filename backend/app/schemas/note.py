@@ -18,6 +18,7 @@ class NoteStatusResponse(BaseModel):
     progress: int
     current_stage: str
     error_message: Optional[str] = None
+    has_transcript: bool = False
     completed_at: Optional[datetime] = None
 
 

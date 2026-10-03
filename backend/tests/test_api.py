@@ -304,3 +304,30 @@ def test_worker_pipeline_transcription_failure(mock_transcribe, mock_get_path, t
     assert "timed out" in failed_note.error_message.lower()
     assert "Failed:" in failed_note.current_stage
     db.close()
+
+
+def test_get_note_audio_stream(tmp_path):
+    """Verify GET /api/notes/{id}/audio streams the audio file safely."""
+    test_audio = tmp_path / "stream_sample.wav"
+    test_audio.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00")
+
+    db = SessionLocal()
+    n = Note(
+        id="audio-stream-test",
+        file_name="stream_sample.wav",
+        storage_key=str(test_audio),
+        file_size=28,
+        mime_type="audio/wav",
+        status=NoteStatus.COMPLETED.value,
+        progress=100,
+        current_stage="Completed",
+    )
+    db.add(n)
+    db.commit()
+    db.close()
+
+    with patch("app.api.notes.storage_service.get_local_file_path", return_value=str(test_audio)):
+        response = client.get("/api/notes/audio-stream-test/audio")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/wav"
+        assert len(response.content) == 24

@@ -95,23 +95,23 @@ def process_audio_note(note_id: str):
                 transcript = asr_result.get("transcript", "").strip()
             except GnaniAuthError as e:
                 logger.error(f"[note_id={note_id}] Gnani authentication error: {e}")
-                _fail_note(db, note_id, "We couldn't authenticate with the Gnani transcription service. Please verify server API configuration.")
+                _fail_note(db, note_id, "Transcription failed. We couldn't authenticate with the Gnani transcription service. Please verify server API configuration.")
                 return
             except GnaniRateLimitError as e:
                 logger.error(f"[note_id={note_id}] Gnani rate limit error: {e}")
-                _fail_note(db, note_id, "The transcription service is currently experiencing high load. Please retry in a few moments.")
+                _fail_note(db, note_id, "Transcription failed. The transcription service is currently experiencing high load. Please retry in a few moments.")
                 return
             except GnaniTimeoutError as e:
                 logger.error(f"[note_id={note_id}] Gnani timeout: {e}")
-                _fail_note(db, note_id, "We couldn't transcribe this audio because the transcription service timed out. Please try again.")
+                _fail_note(db, note_id, "Transcription failed. The transcription service timed out. Please try again.")
                 return
             except GnaniInvalidAudioError as e:
                 logger.error(f"[note_id={note_id}] Invalid audio: {e}")
-                _fail_note(db, note_id, f"The audio file could not be recognized by the speech engine: {str(e)}")
+                _fail_note(db, note_id, f"Transcription failed. The audio file could not be recognized: {str(e)}")
                 return
             except Exception as e:
                 logger.exception(f"[note_id={note_id}] Unexpected error during transcription: {e}")
-                _fail_note(db, note_id, f"Transcription failed: {str(e)}")
+                _fail_note(db, note_id, "Transcription failed. We couldn't process this audio.")
                 return
 
             # Save transcript immediately to PostgreSQL
@@ -143,16 +143,16 @@ def process_audio_note(note_id: str):
 
         except GeminiAuthError as ge:
             logger.error(f"[note_id={note_id}] Gemini authentication error: {ge}")
-            _fail_note(db, note_id, "Transcript was generated successfully, but Google Gemini authentication failed. Please verify GEMINI_API_KEY.")
+            _fail_note(db, note_id, "Transcript generated successfully, but summary generation failed due to an authentication error. The transcript is still available.")
         except GeminiRateLimitError as ge:
             logger.error(f"[note_id={note_id}] Gemini rate limit error: {ge}")
-            _fail_note(db, note_id, "Transcript was generated successfully, but Google Gemini rate limit was reached. Please retry in a few moments.")
+            _fail_note(db, note_id, "Transcript generated successfully, but summary generation failed because Gemini rate limit was reached. The transcript is still available.")
         except GeminiTimeoutError as ge:
             logger.error(f"[note_id={note_id}] Gemini timeout error: {ge}")
-            _fail_note(db, note_id, "Transcript was generated successfully, but Google Gemini timed out. Please try again.")
+            _fail_note(db, note_id, "Transcript generated successfully, but summary generation timed out. The transcript is still available.")
         except Exception as ge:
             logger.error(f"[note_id={note_id}] Gemini summarization error: {ge}")
-            _fail_note(db, note_id, f"Transcript was generated successfully, but summary generation failed. Please try again.")
+            _fail_note(db, note_id, "Transcript generated successfully, but summary generation failed. The transcript is still available.")
 
     except Exception as e:
         logger.exception(f"[note_id={note_id}] Top-level worker exception: {e}")

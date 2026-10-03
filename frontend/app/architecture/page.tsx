@@ -74,23 +74,59 @@ export default function ArchitecturePage() {
                  │ HTTP POST /api/notes/upload (Multipart Audio)
                  ▼
   [ API Gateway / Backend: FastAPI ]
-     ├── 1. Validate MIME & File Size (<100MB)
-     ├── 2. Save Raw Audio ───────────────► [ Object Storage (S3 / Bucket) ]
+     ├── 1. Validate MIME & File Size
+     ├── 2. Save Raw Audio ───────────────► [ Object Storage (S3 / Local Dir) ]
      ├── 3. Insert Initial Record (QUEUED) ─► [ PostgreSQL Database ]
-     └── 4. Enqueue Job ID ────────────────► [ Redis Queue (RQ / Celery) ]
+     └── 4. Enqueue Job ID ────────────────► [ Redis Queue (RQ / Thread Fallback) ]
                                                             │
   ┌─────────────────────────────────────────────────────────┘
   ▼
 [ Background Worker Process ]
   │
-  ├── 1. Fetch Audio from Storage (Local cache / temp)
-  ├── 2. Check Duration & Determine Strategy:
-  │      • Short Audio (<=60s)  ──► Gnani REST STT (/stt/v3)
-  │      • Long Audio (>60s)    ──► Gnani Batch STT (/stt/v3/batch/jobs) or Audio Chunking
-  ├── 3. Save Transcript to PostgreSQL (status: SUMMARIZING)
-  ├── 4. Call Google Gemini (google-genai SDK, structured summary)
-  └── 5. Mark COMPLETED in PostgreSQL (completed_at: timestamp)
+  ├── 1. Fetch Audio from Storage
+  ├── 2. Select STT Strategy:
+  │      • Short Audio (<=25s) ──► Gnani REST STT (/stt/v3)
+  │      • Long Audio (>25s)   ──► Sequential Chunking (/stt/v3) or Batch STT (/stt/v3/batch/jobs)
+  │
+  ├── 3. Persist Transcript to DB ─────► [ PostgreSQL Database ] (Status: SUMMARIZING)
+  │
+  ├── 4. Generate Summary ─────────────► [ Google Gemini (google-genai SDK) ]
+  │                                           │ (API key strictly server-side)
+  │                                           ▼
+  └── 5. Persist Summary to DB ────────► [ PostgreSQL Database ] (Status: COMPLETED)
+                                                            │
+                                                [ Polled by Next.js UI ]
           `}</pre>
+        </div>
+
+        {/* AI Responsibilities Card */}
+        <div className="p-5 rounded-2xl bg-indigo-50/70 border border-indigo-100 space-y-3">
+          <h3 className="text-sm font-bold text-indigo-950 flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-indigo-600" />
+            AI Responsibilities & Strict Separation of Concerns
+          </h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+            <div className="p-3.5 rounded-xl bg-white border border-indigo-100">
+              <span className="font-bold text-slate-900 block mb-1">Gnani Prisma v2.5 ASR</span>
+              <p className="text-indigo-900 font-semibold mb-1">Speech → Text</p>
+              <p className="text-slate-600 leading-relaxed">
+                Dedicated exclusively to speech recognition and Inverse Text Normalization (ITN). It converts acoustic waveform data into normalized, verbatim text with currency, dates, and numbers properly formatted.
+              </p>
+            </div>
+            <div className="p-3.5 rounded-xl bg-white border border-indigo-100">
+              <span className="font-bold text-slate-900 block mb-1">Google Gemini (google-genai)</span>
+              <p className="text-indigo-900 font-semibold mb-1">Transcript → Summary</p>
+              <p className="text-slate-600 leading-relaxed">
+                Dedicated exclusively to language synthesis. Gemini analyzes the transcript produced by Gnani and outputs structured Executive Overview, Key Points, Important Details, and Action Items.
+              </p>
+            </div>
+          </div>
+          <div className="p-3 rounded-xl bg-indigo-100/60 text-indigo-950 text-xs font-medium flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 text-indigo-700 shrink-0" />
+            <span>
+              <strong>Zero-Leakage Security Guarantee:</strong> Google Gemini is called <em>only</em> from the backend/background worker. Its API key is never exposed to the browser, client bundle, or network inspector.
+            </span>
+          </div>
         </div>
       </div>
 
@@ -228,11 +264,11 @@ export default function ArchitecturePage() {
             <h3 className="text-base font-bold text-slate-900">6. Long Audio Processing</h3>
           </div>
           <p className="text-xs text-slate-600 leading-relaxed">
-            Gnani REST STT enforces a 60-second limit (ideal ≤ 30s). To comfortably handle recordings of <strong>2 minutes or longer</strong>, we implement an intelligent multi-strategy pipeline:
+            Gnani REST STT enforces a strict duration limit (optimal duration &le; 25s). To comfortably handle recordings of <strong>2 minutes, 10 minutes, or longer</strong> without blocking the user, long audio is processed asynchronously using real, tested strategies:
           </p>
           <ul className="text-xs text-slate-600 list-disc pl-4 space-y-1">
-            <li><strong>Batch STT API:</strong> Creates an async job via <code>/stt/v3/batch/jobs</code>, polls until completion, and fetches full transcript URL.</li>
-            <li><strong>Intelligent Chunking:</strong> Splits audio into ~40s segments, transcribes sequentially with progress tracking (e.g. <em>&quot;Transcribing segment 2 of 4...&quot;</em>), and stitches results in sequence.</li>
+            <li><strong>Deterministic Audio Chunking (Real Implementation):</strong> Pure Python <code>wave</code> splitting partitions audio into ~25s sequential segments without requiring external binaries. Each segment is transcribed sequentially with live progress tracking (e.g. <em>&quot;Transcribing segment 2 of 4...&quot;</em>) and stitched into a unified transcript.</li>
+            <li><strong>Batch STT API Integration:</strong> For cloud workflows, the worker can initiate an asynchronous batch job via <code>POST /stt/v3/batch/jobs</code>, poll until completion, and retrieve the final transcript file.</li>
           </ul>
         </div>
 
@@ -250,7 +286,7 @@ export default function ArchitecturePage() {
             <li><strong>Transcript Preservation Guarantee:</strong> Transcripts are persisted to PostgreSQL <em>before</em> calling Gemini. If Gemini encounters rate limits or errors, the transcript is never lost.</li>
             <li><strong>Optimized Retry:</strong> Retrying a failed note with an existing transcript skips Gnani ASR and directly triggers Gemini summarization, conserving API credits and time.</li>
             <li><strong>Configurable Model:</strong> Controlled via <code>GEMINI_MODEL</code> (default: <code>gemini-3.5-flash-lite</code>).</li>
-            <li><strong>Structured Schema:</strong> Generates uniform Markdown: <code>## Overview</code>, <code>## Key Points</code>, <code>## Important Details</code>, and <code>## Action Items</code>.</li>
+            <li><strong>Structured Schema:</strong> Generates uniform Markdown: <code>## Overview</code>, <code>## Key Points</code>, <code>## Important Details</code>, and <code>## Action Items</code> (omitted if no action items exist).</li>
             <li><strong>Zero Key Exposure:</strong> <code>GEMINI_API_KEY</code> is strictly backend-only and never leaked to the client bundle or logs.</li>
           </ul>
         </div>
@@ -273,31 +309,31 @@ export default function ArchitecturePage() {
         </div>
       </div>
 
-      {/* Deployment & Production Roadmap */}
+      {/* Deployment Options */}
       <div className="p-6 sm:p-8 rounded-3xl bg-white border border-slate-200 shadow-sm space-y-4">
         <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
           <Cloud className="w-5 h-5 text-indigo-600" />
-          Deployment Architecture & Production Setup
+          Deployment Options
         </h2>
         <p className="text-sm text-slate-600">
-          The platform is containerized and cloud-ready for multi-provider deployments:
+          The platform is cloud-agnostic, containerized, and production-ready for deployment across standard cloud providers:
         </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 pt-2 text-xs">
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-            <span className="font-bold text-slate-800 block mb-1">Frontend</span>
+            <span className="font-bold text-slate-800 block mb-1">Frontend Option</span>
             <span className="text-slate-600">Vercel / Cloudflare Pages</span>
           </div>
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-            <span className="font-bold text-slate-800 block mb-1">Backend API</span>
+            <span className="font-bold text-slate-800 block mb-1">Backend API Option</span>
             <span className="text-slate-600">Render / Fly.io / Railway</span>
           </div>
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-            <span className="font-bold text-slate-800 block mb-1">Background Worker</span>
+            <span className="font-bold text-slate-800 block mb-1">Worker Option</span>
             <span className="text-slate-600">Render Worker / Railway</span>
           </div>
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-            <span className="font-bold text-slate-800 block mb-1">Database & Storage</span>
+            <span className="font-bold text-slate-800 block mb-1">Database & Storage Option</span>
             <span className="text-slate-600">Managed Postgres + Supabase S3</span>
           </div>
         </div>

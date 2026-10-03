@@ -22,6 +22,7 @@ export interface NoteStatusResponse {
   progress: number;
   current_stage: string;
   error_message?: string | null;
+  has_transcript?: boolean;
   completed_at?: string | null;
 }
 

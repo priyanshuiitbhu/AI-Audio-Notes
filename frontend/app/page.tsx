@@ -36,12 +36,14 @@ export default function HomePage() {
   const [progress, setProgress] = useState<number>(0);
   const [currentStage, setCurrentStage] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [hasTranscript, setHasTranscript] = useState<boolean>(false);
   const [isRetrying, setIsRetrying] = useState<boolean>(false);
 
   // Validate selected file
   const handleFile = (file: File) => {
     setValidationError(null);
     setErrorMessage(null);
+    setHasTranscript(false);
 
     if (file.size === 0) {
       setValidationError("The selected file is empty (0 bytes). Please choose a valid audio file.");
@@ -81,6 +83,7 @@ export default function HomePage() {
     setIsUploading(true);
     setValidationError(null);
     setErrorMessage(null);
+    setHasTranscript(false);
     setProcessingStatus("UPLOADING");
     setProgress(5);
     setCurrentStage("Uploading audio file to storage...");
@@ -109,6 +112,9 @@ export default function HomePage() {
         setProcessingStatus(statusResp.status);
         setProgress(statusResp.progress);
         setCurrentStage(statusResp.current_stage);
+        if (statusResp.has_transcript) {
+          setHasTranscript(true);
+        }
         if (statusResp.error_message) {
           setErrorMessage(statusResp.error_message);
         }
@@ -166,7 +172,7 @@ export default function HomePage() {
           Turn your audio into notes
         </h1>
         <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-          Upload any audio file to transcribe with industry-leading speech recognition and generate structured AI summaries with key action items.
+          Turn your audio into accurate transcripts and structured AI summaries with key points, important details, and action items.
         </p>
       </div>
 
@@ -180,6 +186,8 @@ export default function HomePage() {
               progress={progress}
               currentStage={currentStage}
               errorMessage={errorMessage}
+              hasTranscript={hasTranscript}
+              noteId={noteId}
               onRetry={handleRetry}
               isRetrying={isRetrying}
             />
@@ -251,11 +259,11 @@ export default function HomePage() {
               <h3 className="text-base font-bold text-slate-800">
                 Click to browse or drag & drop audio here
               </h3>
-              <p className="text-xs text-slate-500 mt-1.5">
-                MP3, WAV, M4A, AAC, OGG, or FLAC up to {MAX_SIZE_MB}MB
+              <p className="text-xs text-slate-500 mt-1.5 font-medium">
+                MP3, WAV, M4A, AAC, OGG, or FLAC
               </p>
-              <p className="text-xs text-indigo-600 font-medium mt-3">
-                Comfortably handles long recordings (2+ minutes) via asynchronous pipeline
+              <p className="text-xs text-indigo-600 font-semibold mt-2.5">
+                Supports long recordings through asynchronous processing
               </p>
             </div>
 
