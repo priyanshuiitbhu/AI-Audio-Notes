@@ -7,7 +7,10 @@ import {
 } from "@/types/note";
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+  process.env.NEXT_PUBLIC_API_URL ||
+  (process.env.NODE_ENV === "production"
+    ? "https://ai-audio-notes-production.up.railway.app/api"
+    : "http://localhost:8000/api");
 
 export class ApiError extends Error {
   status: number;

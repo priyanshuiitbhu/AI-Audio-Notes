@@ -20,7 +20,8 @@ import {
 
 export default function ArchitecturePage() {
   const repoUrl =
-    process.env.NEXT_PUBLIC_GITHUB_REPO_URL || "https://github.com";
+    process.env.NEXT_PUBLIC_GITHUB_REPO_URL ||
+    "https://github.com/priyanshuiitbhu/AI-Audio-Notes";
 
   return (
     <div className="space-y-12 max-w-5xl mx-auto pb-16">
@@ -33,7 +34,7 @@ export default function ArchitecturePage() {
           System Architecture & Engineering Design
         </h1>
         <p className="text-base text-slate-600 max-w-3xl leading-relaxed">
-          A full-stack, distributed platform designed for robust audio transcription and AI-powered summarization, built with Next.js, FastAPI, PostgreSQL, S3-compatible Object Storage, Redis background task workers, and Gnani Prisma ASR.
+          The deployed platform runs the Next.js frontend on Vercel and a containerized FastAPI API plus persistent RQ worker on Railway, backed by managed PostgreSQL, Redis, and a durable Railway storage volume.
         </p>
 
         {/* GitHub Link Bar */}
@@ -41,14 +42,14 @@ export default function ArchitecturePage() {
           <div className="inline-flex items-center gap-3 p-3 px-4 rounded-xl bg-white border border-slate-200 shadow-sm text-xs">
             <Github className="w-4 h-4 text-slate-800" />
             <span className="font-semibold text-slate-700">GitHub Repository:</span>
-            {process.env.NEXT_PUBLIC_GITHUB_REPO_URL ? (
+            {repoUrl ? (
               <a
-                href={process.env.NEXT_PUBLIC_GITHUB_REPO_URL}
+                href={repoUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="font-mono text-indigo-600 hover:underline"
               >
-                {process.env.NEXT_PUBLIC_GITHUB_REPO_URL}
+                {repoUrl}
               </a>
             ) : (
               <span className="font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
@@ -69,15 +70,15 @@ export default function ArchitecturePage() {
         {/* Visual Flow ASCII / Grid */}
         <div className="p-6 rounded-2xl bg-slate-900 text-slate-100 font-mono text-xs overflow-x-auto leading-relaxed shadow-inner">
           <pre>{`
-  [ Client Browser: Next.js + TypeScript ]
+  [ Vercel: Next.js + TypeScript ]
                  │
                  │ HTTP POST /api/notes/upload (Multipart Audio)
                  ▼
-  [ API Gateway / Backend: FastAPI ]
+  [ Railway Container: FastAPI + persistent RQ worker ]
      ├── 1. Validate MIME & File Size
-     ├── 2. Save Raw Audio ───────────────► [ Object Storage (S3 / Local Dir) ]
-     ├── 3. Insert Initial Record (QUEUED) ─► [ PostgreSQL Database ]
-     └── 4. Enqueue Job ID ────────────────► [ Redis Queue (RQ / Thread Fallback) ]
+     ├── 2. Save Raw Audio ───────────────► [ Railway Volume: /data/storage ]
+     ├── 3. Insert Initial Record (QUEUED) ─► [ Railway PostgreSQL ]
+     └── 4. Enqueue Job ID ────────────────► [ Railway Redis / RQ ]
                                                             │
   ┌─────────────────────────────────────────────────────────┘
   ▼
@@ -232,7 +233,7 @@ export default function ArchitecturePage() {
             <h3 className="text-base font-bold text-slate-900">4. Object Storage</h3>
           </div>
           <p className="text-xs text-slate-600 leading-relaxed">
-            Provider-independent storage service supporting both <strong>AWS S3 / Supabase Storage / Cloudflare R2</strong> and local filesystem storage for zero-dependency local development.
+            Production audio is stored on an attached <strong>Railway persistent volume</strong> at <code>/data/storage</code>. The provider abstraction continues to support S3-compatible storage and local filesystem storage for development.
           </p>
           <ul className="text-xs text-slate-600 list-disc pl-4 space-y-1">
             <li>Safe path hierarchy: <code>audio/&#123;note_id&#125;/&#123;sanitized_filename&#125;</code>.</li>
@@ -313,32 +314,32 @@ export default function ArchitecturePage() {
         </div>
       </div>
 
-      {/* Deployment Options */}
+      {/* Production Deployment */}
       <div className="p-6 sm:p-8 rounded-3xl bg-white border border-slate-200 shadow-sm space-y-4">
         <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
           <Cloud className="w-5 h-5 text-indigo-600" />
-          Deployment Options
+          Production Deployment
         </h2>
         <p className="text-sm text-slate-600">
-          The platform is cloud-agnostic, containerized, and production-ready for deployment across standard cloud providers:
+          This page describes the live production topology used by the public application:
         </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 pt-2 text-xs">
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-            <span className="font-bold text-slate-800 block mb-1">Frontend Option</span>
-            <span className="text-slate-600">Vercel / Cloudflare Pages</span>
+            <span className="font-bold text-slate-800 block mb-1">Frontend</span>
+            <a className="text-indigo-600 hover:underline" href="https://ai-audio-notes-one.vercel.app" target="_blank" rel="noopener noreferrer">Vercel production</a>
           </div>
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-            <span className="font-bold text-slate-800 block mb-1">Backend API Option</span>
-            <span className="text-slate-600">Render / Fly.io / Railway</span>
+            <span className="font-bold text-slate-800 block mb-1">Backend API</span>
+            <a className="text-indigo-600 hover:underline" href="https://ai-audio-notes-production.up.railway.app/api/health" target="_blank" rel="noopener noreferrer">Railway FastAPI</a>
           </div>
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-            <span className="font-bold text-slate-800 block mb-1">Worker Option</span>
-            <span className="text-slate-600">Render Worker / Railway</span>
+            <span className="font-bold text-slate-800 block mb-1">Worker & Queue</span>
+            <span className="text-slate-600">Persistent RQ worker + Railway Redis</span>
           </div>
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-            <span className="font-bold text-slate-800 block mb-1">Database & Storage Option</span>
-            <span className="text-slate-600">Managed Postgres + Supabase S3</span>
+            <span className="font-bold text-slate-800 block mb-1">Data</span>
+            <span className="text-slate-600">Railway PostgreSQL + persistent volume</span>
           </div>
         </div>
       </div>

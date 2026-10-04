@@ -36,7 +36,7 @@ Designed and engineered for the **Gnani Innovations Private Limited Take-Home As
 
 The **Audio Notes Platform** solves the challenge of capturing and structuring spoken information from meetings, lectures, voice memos, and call recordings. 
 
-Users upload an audio recording in any standard format (MP3, WAV, M4A, AAC, OGG, FLAC). The backend immediately persists the audio to object storage, enqueues an asynchronous background job, and returns control to the user. An autonomous worker streams the recording to Gnani's Speech-to-Text API, saves the verbatim and normalized transcript to PostgreSQL, prompts an LLM to extract key discussion points and action items, and presents the resulting notes on an interactive, responsive Next.js frontend.
+Users upload an audio recording in any standard format (MP3, WAV, M4A, AAC, OGG, FLAC). The backend immediately persists the audio to durable storage, enqueues an asynchronous background job, and returns control to the user. An autonomous worker streams the recording to Gnani's Speech-to-Text API, saves the verbatim and normalized transcript to PostgreSQL, prompts Gemini to extract key discussion points and action items, and presents the resulting notes on an interactive, responsive Next.js frontend.
 
 ---
 
@@ -63,22 +63,23 @@ Users upload an audio recording in any standard format (MP3, WAV, M4A, AAC, OGG,
                                 │
                                 ▼
                        ┌─────────────────┐
-                       │ Next.js 14 (TS) │
+                       │ Vercel: Next.js │
                        │    Frontend     │
                        └────────┬────────┘
                                 │
                                 │ REST API (HTTP)
                                 ▼
                        ┌─────────────────┐
-                       │ FastAPI Backend │
+                       │ Railway FastAPI │
+                       │ + RQ Worker     │
                        └────────┬────────┘
                                 │
                ┌────────────────┴────────────────┐
                │                                 │
                ▼                                 ▼
       ┌──────────────────┐             ┌──────────────────┐
-      │ PostgreSQL DB    │             │  Object Storage  │
-      │ (Alembic Schema) │             │ (S3 / Local Dir) │
+      │ Railway Postgres │             │ Railway Volume   │
+      │ (Alembic Schema) │             │ /data/storage    │
       └──────────────────┘             └────────┬─────────┘
                                                 │
                                                 ▼
@@ -108,9 +109,9 @@ Users upload an audio recording in any standard format (MP3, WAV, M4A, AAC, OGG,
 
 - **Frontend**: Next.js 14 (App Router), TypeScript, Tailwind CSS, Lucide React
 - **Backend API**: FastAPI, Python 3.10+, Pydantic v2, Uvicorn
-- **Database**: PostgreSQL 16 (production), SQLite (zero-dependency local test mode), SQLAlchemy ORM, Alembic migrations
-- **Storage**: S3-compatible Object Storage (AWS S3, Supabase Storage, Cloudflare R2, MinIO) + Local filesystem provider
-- **Background Jobs**: Redis 7 + Python RQ (with automatic daemon thread fallback for lightweight local dev)
+- **Database**: Managed PostgreSQL 18 (production), SQLite (zero-dependency local test mode), SQLAlchemy ORM, Alembic migrations
+- **Storage**: Persistent Railway volume in production; S3-compatible and local filesystem providers remain supported
+- **Background Jobs**: Managed Redis 8 + persistent Python RQ worker (with automatic daemon thread fallback for lightweight local dev)
 - **AI / Speech**: Gnani Prisma v2.5 Speech-to-Text API (`api.vachana.ai`)
 - **AI / LLM**: Google Gemini (`google-genai` official Python SDK, default model: `gemini-3.5-flash-lite`) with structured prompt engineering & extractive fallback
 
@@ -188,7 +189,7 @@ cp .env.example .env
 | :--- | :--- | :--- |
 | `DATABASE_URL` | PostgreSQL or SQLite connection string | `sqlite:///./audionotes.db` or `postgresql://postgres:postgrespassword@localhost:5432/audionotes` |
 | `REDIS_URL` | Redis URL for task queue | `redis://localhost:6379/0` |
-| `GNANI_API_KEY` | Gnani Prisma ASR API Key (Backend only) | `vach_1ytE2CY5X...` |
+| `GNANI_API_KEY` | Gnani Prisma ASR API Key (Backend only) | `<server-side secret>` |
 | `GNANI_API_BASE_URL` | Gnani API Base URL | `https://api.vachana.ai` |
 | `DEFAULT_LANGUAGE` | Default audio language code | `en-IN` |
 | `STORAGE_PROVIDER` | `local` (saves to disk) or `s3` (cloud bucket) | `local` |
@@ -197,7 +198,7 @@ cp .env.example .env
 | `STORAGE_ENDPOINT` | Custom S3 endpoint (for Supabase / MinIO / R2) | Optional |
 | `STORAGE_ACCESS_KEY` | S3 access key ID | Optional |
 | `STORAGE_SECRET_KEY` | S3 secret access key | Optional |
-| `GEMINI_API_KEY` | Google Gemini API Key (Backend only, never exposed to frontend) | `AIzaSy...` |
+| `GEMINI_API_KEY` | Google Gemini API Key (Backend only, never exposed to frontend) | `<server-side secret>` |
 | `GEMINI_MODEL` | Google Gemini Model Identifier | `gemini-3.5-flash-lite` |
 | `NEXT_PUBLIC_API_URL` | FastAPI backend URL for frontend | `http://localhost:8000/api` |
 | `NEXT_PUBLIC_GITHUB_REPO_URL` | GitHub repository link for `/architecture` | `https://github.com/priyanshuiitbhu/AI-Audio-Notes.git` |
@@ -268,6 +269,25 @@ Open your browser at `http://localhost:3000`.
 
 ---
 
+## Deployment Guide
+
+The repository is connected to the live production services. Pushes to `main` deploy the frontend and backend automatically.
+
+| Component | Production service |
+| :--- | :--- |
+| Frontend | Vercel: <https://ai-audio-notes-one.vercel.app> |
+| Backend | Railway: <https://ai-audio-notes-production.up.railway.app> |
+| Database | Railway managed PostgreSQL with Alembic migrations run at container startup |
+| Queue | Railway managed Redis |
+| Worker | Persistent RQ worker supervised alongside FastAPI in the Railway container |
+| Audio storage | Railway persistent volume mounted at `/data`, with files under `/data/storage` |
+
+Railway builds `backend/Dockerfile`, which installs `ffmpeg`, installs the Python dependencies, runs `backend/start_production.py`, applies migrations, and supervises both Uvicorn and the RQ worker. Production requires `REQUIRE_REDIS_QUEUE=true`; it never falls back to an in-process thread if Redis is unavailable. Secrets are configured only as Railway environment variables and are not stored in this repository.
+
+The frontend reads `NEXT_PUBLIC_API_URL` when supplied. Its production fallback points to the Railway API, while local development continues to use `http://localhost:8000/api`.
+
+---
+
 ## Testing
 
 Automated tests cover all core features with **100% mocked external APIs** (no real credits or internet requests during testing):
@@ -278,7 +298,7 @@ source venv/bin/activate
 pytest -v
 ```
 
-### Test Suite Coverage (27 Unit & Integration Tests):
+### Test Suite Coverage (34 Unit & Integration Tests):
 
 **API & Pipeline Tests (`test_api.py`)**:
 - `test_health_check_endpoint`: Verifies `/api/health` reports DB, Redis, storage, and Gemini status.
